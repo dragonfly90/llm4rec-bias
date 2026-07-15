@@ -144,6 +144,21 @@ over 1,682 items; chance HR@10 = 0.6%):
 | free-gen validity | 94% | unconstrained generation emits a real catalog ID |
 | **pop_lift@1** | **+0.48** | top-1 retrievals sit ~0.48 popularity quantiles above catalog mean — SFT alone already installs a strong popularity shortcut, before any RL |
 
+**What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
+(ranked by training interaction count: 0 = least-watched, 1 = most-watched,
+0.5 = median). `pop_lift@1` is the mean quantile of the model's rank-1
+retrievals minus the catalog mean (≈ 0.5). Scale: −0.5 = only retrieves the
+most obscure items, **0 = popularity-neutral**, +0.5 = only retrieves the most
+popular. Our +0.48 means top-1 picks average ~0.98 quantile — the model almost
+exclusively retrieves the top few percent most-popular movies. Two caveats:
+(1) some lift is legitimate — popular movies genuinely are watched next more
+often, and the held-out targets themselves average above 0.5, so the research
+question is how much lift *exceeds* what held-out data justifies and whether
+RL inflates it (that's why the same quantity is logged per GRPO step as
+`shortcut/pop_lift`); (2) in the letter route the analogous metric subtracts
+the *candidate-set* mean instead of the catalog mean, since the model can only
+choose among the 10 shown items.
+
 Bias-cue notes for this route: the position cue disappears (no candidate
 list); popularity bias is measured on *generated* items vs the catalog mean;
 the semantic-prior cue becomes first-class — `shortcut/prefix_depth` tracks
