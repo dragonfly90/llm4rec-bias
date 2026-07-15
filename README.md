@@ -79,6 +79,84 @@ or suppress — exactly the phenomenon to track through SFT → GRPO.
    - Reward-side fixes: penalize choices that track the cue (edit `reward.py`)
    - Early stopping at KL/probe thresholds
 
+## Python interface
+
+The CLI entrypoints are thin wrappers; everything is importable for custom
+experiments (`uv sync` installs `llm4rec` editable).
+
+### Prompts and answer parsing (`llm4rec.prompts`)
+
+```python
+from llm4rec.prompts import build_prompt, parse_choice
+
+messages = build_prompt(
+    history=["Fargo (1996)", "Groundhog Day (1993)"],   # oldest -> newest
+    candidates=["Titanic (1997)", "Vertigo (1958)"],     # letters A, B, ...
+    pop_quantiles=[0.98, 0.61],                          # per-candidate popularity in [0,1]
+    framing="neutral",                                   # or "evaluative" -> popularity markers
+)  # -> [{"role": "system", ...}, {"role": "user", ...}]
+
+parse_choice("Answer: B", num_candidates=2)   # -> 1
+parse_choice("Based on history, A", 2)        # -> None (invalid, not a bare letter)
+```
+
+### Dataset rows (`data/*.jsonl`)
+
+```python
+import json
+
+row = json.loads(open("data/train.jsonl").readline())
+row["prompt"]         # chat messages (list of dicts)
+row["target"]         # ground-truth candidate index (int)
+row["answer"]         # same as a letter, e.g. "B" (SFT label)
+row["candidates"]     # candidate titles, index-aligned with the letters
+row["item_ids"]       # MovieLens item ids, index-aligned
+row["pop_quantiles"]  # popularity quantile per candidate, index-aligned
+```
+
+### Custom rewards for GRPO (`llm4rec.reward`)
+
+`GRPOTrainer` calls the reward function with the completions plus every extra
+dataset column as a keyword list. To try a mitigation idea, write a new reward
+with the same signature and pass it in `grpo.py`:
+
+```python
+from llm4rec.prompts import parse_choice
+from llm4rec.reward import choice_reward
+
+def depop_reward(prompts, completions, target=None, pop_quantiles=None, **kw):
+    """Example mitigation: subtract a popularity-tracking penalty."""
+    base = choice_reward(prompts, completions, target=target,
+                         pop_quantiles=pop_quantiles, **kw)
+    out = []
+    for r, comp, quants in zip(base, completions, pop_quantiles):
+        text = comp if isinstance(comp, str) else comp[-1]["content"]
+        c = parse_choice(text, len(quants))
+        lift = 0.0 if c is None else quants[c] - sum(quants) / len(quants)
+        out.append(r - 0.5 * max(lift, 0.0))
+    return out
+
+# in grpo.py: GRPOTrainer(model=..., reward_funcs=depop_reward, ...)
+```
+
+### Programmatic evaluation (`llm4rec.eval`)
+
+```python
+import json
+from llm4rec.eval import load_model, evaluate, score_letters
+
+tok, model = load_model("Qwen/Qwen2.5-0.5B-Instruct",
+                        adapter="runs/sft/final", device="mps")
+rows = [json.loads(l) for l in open("data/test.jsonl")][:200]
+
+report = evaluate(tok, model, "mps", rows, position_probe_n=20)
+report["hr@1"], report["pop_lift"], report["position_probe"]["spread"]
+
+# or score one prompt directly: log-prob of each candidate letter
+scores = score_letters(tok, model, "mps", rows[0]["prompt"],
+                       n=len(rows[0]["candidates"]))   # np.ndarray, argmax = choice
+```
+
 ## Layout
 
 ```
