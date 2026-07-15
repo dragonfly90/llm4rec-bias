@@ -119,6 +119,16 @@ uv run python -m llm4rec.sid_grpo --sft-adapter runs/sid_sft/final --steps 300 -
 uv run python -m llm4rec.sid_eval --adapter runs/sid_grpo/final --max-examples 300 --out runs/eval_sid_grpo.json
 ```
 
+**SFT checkpoint results** (2 epochs, 300 test users, full-catalog retrieval
+over 1,682 items; chance HR@10 = 0.6%):
+
+| metric | value | note |
+|---|---|---|
+| HR@1 / HR@10 | 1.3% / 7.7% | ~13× over chance |
+| NDCG@10 | 0.039 | |
+| free-gen validity | 94% | unconstrained generation emits a real catalog ID |
+| **pop_lift@1** | **+0.48** | top-1 retrievals sit ~0.48 popularity quantiles above catalog mean — SFT alone already installs a strong popularity shortcut, before any RL |
+
 Bias-cue notes for this route: the position cue disappears (no candidate
 list); popularity bias is measured on *generated* items vs the catalog mean;
 the semantic-prior cue becomes first-class — `shortcut/prefix_depth` tracks
