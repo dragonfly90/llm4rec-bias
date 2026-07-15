@@ -101,6 +101,21 @@ leading codes (e.g. *Toy Story* and *A Goofy Movie* share a 2-level prefix).
 The 196 code tokens are added to the tokenizer; only those embedding rows are
 trained (peft `trainable_token_indices`) alongside the usual LoRA adapters.
 
+**Vocabulary sizes** (measured):
+
+| what | size |
+|---|---|
+| Qwen2.5-0.5B tokenizer (base) | 151,665 tokens |
+| semantic-ID code tokens added | 196 (= 3 levels × 64 codes + 4 collision-breakers) |
+| tokenizer after adding | 151,861 |
+| model embedding rows | 151,936 (Qwen ships slack, so **no resize needed** — sid tokens occupy reserved rows) |
+| item catalog | 1,682 movies, each exactly 4 sid tokens (64³ = 262,144 addressable IDs) |
+| distinct tokens actually used in the sid dataset (prompts + answers) | 2,584 |
+
+The effective *output* vocabulary of the task is just the 196 code tokens (plus
+EOS): every answer is 4 codes, and constrained decoding walks a trie whose
+root branches over at most 64 level-0 tokens.
+
 **Task**: history (titles + sids) → generate the next item's sid.
 **Reward** (`sid_reward.py`): 1.0 exact item; else `0.1 ×` matching leading
 levels (semantic-closeness credit — itself a researchable shortcut, disable
