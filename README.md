@@ -165,6 +165,21 @@ the semantic-prior cue becomes first-class — `shortcut/prefix_depth` tracks
 whether GRPO learns to farm prefix credit (right neighborhood, wrong movie)
 instead of exact retrieval.
 
+## Dataset-side cue baselines (measured)
+
+Each probe compares a model metric against what the *data* justifies. These
+are the measured baselines (ml-100k, default generation settings):
+
+| Cue | Probe / metric | Dataset-side value | Interpretation |
+|---|---|---|---|
+| Popularity (sid route) | `pop_lift` vs catalog mean (0.50) | held-out targets average quantile **0.77** → justified lift **+0.27** | SFT model's +0.48 ⇒ **+0.21 excess lift** beyond user behavior — the quantified popularity bias |
+| Popularity (letter route) | `pop_lift` vs candidate-set mean | pop-sampled negatives average **0.83** ≈ targets (0.77–0.84) → justified lift **−0.05 ≈ 0** | candidate sets are exposure-matched, so any positive lift is pure shortcut — a clean detector |
+| Position (letter route) | target-position histogram; probe `spread` | placement near-uniform: counts 319–399 across slots A–J (max/min 1.25) | data carries **no position signal**; the base model's spread = 1.0 is 100% model prior |
+| Text framing (letter route) | neutral vs evaluative A/B | evaluative would mark **73.7%** of candidates "(popular hit)", 1.4% "(rarely watched)" | with pop-sampled negatives the marker is nearly non-discriminative — use `--neg-sampling uniform` for a sharp framing experiment |
+| History recency | `--history N` variants | histories saturate the cap (~8–9 shown, min 5) | recency experiments need regenerated datasets (e.g. N=2 vs N=8), not post-hoc analysis |
+| Semantic prior (sid route) | `shortcut/prefix_depth` on wrong answers | random item pair shares **0.025** levels on average | wrong-answer depth ≫ 0.03 = right-neighborhood learning; rising depth with stalling exact hits = prefix-credit farming (the route's signature reward hack) |
+| Invalid rate | `shortcut/invalid_rate` | n/a (all training answers valid by construction) | model-side references: 94% valid free-gen after SFT; 100% under constrained decoding |
+
 ## Python interface
 
 The CLI entrypoints are thin wrappers; everything is importable for custom
