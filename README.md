@@ -157,6 +157,106 @@ scores = score_letters(tok, model, "mps", rows[0]["prompt"],
                        n=len(rows[0]["candidates"]))   # np.ndarray, argmax = choice
 ```
 
+## Multimodal extension (planned): poster input via Gemma 4
+
+Not implemented yet — this documents the prompt formats for extending the lab
+to multimodal input (the spec's MLLMRec-R1 route). Target model:
+`google/gemma-4-E2B-it` (multimodal, fits 16 GB Apple silicon; HF
+license-gated). trl ≥ 1.8 supports VLMs in both `SFTTrainer` and `GRPOTrainer`
+natively via an `"images"` dataset column. MovieLens-100K ships no images;
+posters come from community item-id → TMDb mappings.
+
+Example user (real test row; comedy-leaning mid-90s watcher, ground truth
+**F. The Birdcage (1996)**).
+
+### Route 0 — text-only (current)
+
+```
+Movies this user watched recently (oldest to newest):
+- Phenomenon (1996)
+- That Thing You Do! (1996)
+...
+Candidates:
+A. Jane Eyre (1996)
+...
+F. Birdcage, The (1996)
+...
+Which candidate will the user watch next? Answer with only the letter.
+```
+
+### Route A — offline image-to-text (spec-faithful, recommended first)
+
+One-time captioning pass per poster (any local VLM, cached):
+
+```
+[user]  <poster image: The Birdcage (1996)>
+        Describe this movie poster in one sentence: visual style, tone,
+        and what genre it signals. Do not name the movie.
+
+[assistant]  Bright pink-and-white poster with two smiling middle-aged men
+             in a tropical art-deco setting, signaling a lighthearted
+             mainstream comedy.
+```
+
+The recommendation prompt stays text-only (same policy model as now), with
+captions interleaved:
+
+```
+Candidates (with poster descriptions):
+A. Jane Eyre (1996) — muted period portrait of a woman in Victorian
+   dress, somber romantic drama tone
+B. Tales from the Crypt Presents: Bordello of Blood (1996) — lurid
+   red horror-comedy art with a leering vampire figure
+...
+F. The Birdcage (1996) — bright pink-and-white art-deco comedy
+   poster with two smiling middle-aged men
+...
+Which candidate will the user watch next? Answer with only the letter.
+```
+
+### Route B — end-to-end pixels into Gemma 4
+
+The dataset row carries actual images; chat messages use structured content
+parts (the format trl's VLM path consumes):
+
+```python
+{
+  "images": [PIL.Image, ...],                     # 10 posters, order = A..J
+  "prompt": [
+    {"role": "system", "content": "You are a movie recommender. ..."},
+    {"role": "user", "content": [
+        {"type": "text",  "text": "Movies this user watched recently:\n- Phenomenon (1996)\n...\n\nCandidates:"},
+        {"type": "text",  "text": "A. Jane Eyre (1996)"},
+        {"type": "image"},                        # poster A
+        {"type": "text",  "text": "B. Tales from the Crypt Presents: Bordello of Blood (1996)"},
+        {"type": "image"},                        # poster B
+        # ... C through J ...
+        {"type": "text",  "text": "Which candidate will the user watch next? Answer with only the letter."}
+    ]}
+  ]
+}
+```
+
+Cost note: each image expands to ~256 tokens, so this prompt is ~3K tokens vs
+~350 for Route A — the compute price of true multimodality (slower GRPO
+rollouts on MPS).
+
+### The probe this buys: visual salience (fifth cue dimension)
+
+Hold every title fixed and swap only the posters between two candidates:
+
+```
+A. Jane Eyre (1996)        + [poster of The Birdcage]     <- swapped
+...
+F. The Birdcage (1996)     + [poster of Jane Eyre]        <- swapped
+```
+
+A content-driven model still picks F; a model shortcutting on visual
+attractiveness follows the flashy poster to A. Same permutation logic as the
+position probe, applied to pixels. In Route A the analogous test swaps caption
+lines — cheaper, and it isolates whether the shortcut lives in visual features
+or merely in the evaluative language describing them.
+
 ## Layout
 
 ```
