@@ -8,7 +8,16 @@ data layer and measured by dedicated probes.
 
 Runs on an Apple-silicon Mac (tested: M3, 16 GB) with `Qwen/Qwen2.5-0.5B-Instruct`.
 
-## Task
+Two task routes are implemented:
+
+| | Route 1: letter choice | Route 2: semantic-ID generative retrieval (recommended) |
+|---|---|---|
+| Task | pick among 10 lettered candidates | generate the next item's semantic ID; scored against the **full catalog** |
+| Spec analogue | MLLMRec-R1 (discriminative form) | MiniOneRec |
+| Item identity | letters A–J per prompt | global `<s0_i><s1_j><s2_k><s3_c>` codes; similar movies share prefixes |
+| Files | `data / sft / grpo / eval / reward` | `semid / sid_data / sid_sft / sid_grpo / sid_eval / sid_reward` |
+
+## Route 1: letter choice
 
 Next-movie **choice**: prompt = user's recent watch history (titles) + C=10
 lettered candidates (ground-truth next item among popularity-sampled
@@ -78,6 +87,43 @@ or suppress — exactly the phenomenon to track through SFT → GRPO.
    - Cue-randomized training data (position/framing randomization at data level)
    - Reward-side fixes: penalize choices that track the cue (edit `reward.py`)
    - Early stopping at KL/probe thresholds
+
+## Route 2: semantic-ID generative retrieval
+
+Fixes the weakness of per-prompt letter mapping: item identity lives in
+**global semantic-ID tokens**, and retrieval runs against the whole catalog
+instead of 10 candidates.
+
+**Semantic IDs** (`semid.py`): each item's text ("Title (year). Genres: ...")
+is embedded with frozen MiniLM, then residual k-means (3 levels × 64 codes)
+quantizes the embeddings; a 4th level breaks collisions. Similar movies share
+leading codes (e.g. *Toy Story* and *A Goofy Movie* share a 2-level prefix).
+The 196 code tokens are added to the tokenizer; only those embedding rows are
+trained (peft `trainable_token_indices`) alongside the usual LoRA adapters.
+
+**Task**: history (titles + sids) → generate the next item's sid.
+**Reward** (`sid_reward.py`): 1.0 exact item; else `0.1 ×` matching leading
+levels (semantic-closeness credit — itself a researchable shortcut, disable
+with `--prefix-credit 0`); −0.5 invalid ID. Telemetry per GRPO step:
+`shortcut/invalid_rate`, `shortcut/pop_lift`, `shortcut/prefix_depth`.
+**Eval** (`sid_eval.py`): constrained beam search over the trie of valid IDs →
+top-K catalog ranking → HR@1/HR@10/NDCG@10, `pop_lift@1`, plus unconstrained
+generation validity.
+
+```bash
+uv run python -m llm4rec.semid    --out data          # build semantic_ids.json
+uv run python -m llm4rec.sid_data --out data          # sid_{train,val,test}.jsonl + item_meta.json
+uv run python -m llm4rec.sid_sft  --out runs/sid_sft  # stage 1 (~40 min on M3)
+uv run python -m llm4rec.sid_eval --adapter runs/sid_sft/final --max-examples 300 --out runs/eval_sid_sft.json
+uv run python -m llm4rec.sid_grpo --sft-adapter runs/sid_sft/final --steps 300 --out runs/sid_grpo
+uv run python -m llm4rec.sid_eval --adapter runs/sid_grpo/final --max-examples 300 --out runs/eval_sid_grpo.json
+```
+
+Bias-cue notes for this route: the position cue disappears (no candidate
+list); popularity bias is measured on *generated* items vs the catalog mean;
+the semantic-prior cue becomes first-class — `shortcut/prefix_depth` tracks
+whether GRPO learns to farm prefix credit (right neighborhood, wrong movie)
+instead of exact retrieval.
 
 ## Python interface
 
@@ -261,10 +307,19 @@ or merely in the evaluative language describing them.
 
 ```
 src/llm4rec/
-  prompts.py   templates + framing cue + answer parser
-  data.py      ml-100k download, leave-one-out split, cue-controlled examples
-  reward.py    GRPO reward + shortcut telemetry
-  sft.py       stage 1: LoRA SFT (assistant-only loss)
-  grpo.py      stage 2: merge SFT LoRA, GRPO with KL constraint
-  eval.py      letter-logprob ranking: HR@1/NDCG@5, pop_lift, position probe
+  # Route 1: letter choice
+  prompts.py    templates + framing cue + answer parser
+  data.py       ml-100k download, leave-one-out split, cue-controlled examples
+  reward.py     GRPO reward + shortcut telemetry
+  sft.py        stage 1: LoRA SFT (assistant-only loss)
+  grpo.py       stage 2: merge SFT LoRA, GRPO with KL constraint
+  eval.py       letter-logprob ranking: HR@1/NDCG@5, pop_lift, position probe
+  # Route 2: semantic-ID generative retrieval
+  semid.py      MiniLM embeddings -> residual k-means -> sid tokens + trie
+  sid_model.py  tokenizer/model setup with sid tokens (mean-init rows)
+  sid_data.py   history -> next-sid dataset + item_meta.json
+  sid_sft.py    stage 1: LoRA + trainable sid token rows
+  sid_reward.py exact/prefix-credit/invalid reward + telemetry
+  sid_grpo.py   stage 2: GRPO on merged SFT weights
+  sid_eval.py   constrained beam search: HR@K/NDCG@K over full catalog
 ```
