@@ -13,7 +13,7 @@ from trl import GRPOConfig, GRPOTrainer
 
 from .semid import SidTable
 from .sid_model import prepare
-from .sid_reward import make_sid_reward
+from .sid_reward import make_minionerec_reward, make_pop_penalty, make_sid_reward
 
 
 def main():
@@ -31,6 +31,12 @@ def main():
     ap.add_argument("--beta", type=float, default=0.04)
     ap.add_argument("--temperature", type=float, default=0.9)
     ap.add_argument("--prefix-credit", type=float, default=0.1)
+    ap.add_argument("--reward", choices=["prefix", "minionerec"], default="prefix",
+                    help="prefix: exact + prefix-credit shaping; "
+                         "minionerec: binary rule + rank-aware hard-negative penalty")
+    ap.add_argument("--pop-weight", type=float, default=0.0,
+                    help="weight of the popularity penalty added as a second "
+                         "reward function (0 = off)")
     args = ap.parse_args()
 
     ds = load_dataset("json", data_files=args.train)["train"]
@@ -46,6 +52,18 @@ def main():
         r=16, lora_alpha=32, lora_dropout=0.0, task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
+    if args.reward == "minionerec":
+        main_reward = make_minionerec_reward(args.sid_table, args.item_meta,
+                                             num_generations=args.num_generations)
+    else:
+        main_reward = make_sid_reward(args.sid_table, args.item_meta,
+                                      prefix_credit=args.prefix_credit)
+    reward_funcs = [main_reward]
+    reward_weights = [1.0]
+    if args.pop_weight > 0:
+        reward_funcs.append(make_pop_penalty(args.sid_table, args.item_meta))
+        reward_weights.append(args.pop_weight)
+
     cfg = GRPOConfig(
         output_dir=args.out,
         max_steps=args.steps,
@@ -55,6 +73,7 @@ def main():
         temperature=args.temperature,
         beta=args.beta,
         learning_rate=args.lr,
+        reward_weights=reward_weights,
         logging_steps=5,
         save_steps=100,
         bf16=True,
@@ -62,8 +81,7 @@ def main():
     )
     trainer = GRPOTrainer(
         model=model,
-        reward_funcs=make_sid_reward(args.sid_table, args.item_meta,
-                                     prefix_credit=args.prefix_credit),
+        reward_funcs=reward_funcs,
         args=cfg,
         train_dataset=ds,
         processing_class=tok,

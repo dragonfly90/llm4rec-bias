@@ -299,6 +299,32 @@ the policy collapses to low-entropy conservative output. The letter route
 (`reward.py`) is the degenerate version: +1 / 0 / −0.5, no shaping (chance is
 already 10%).
 
+**MiniOneRec reward + popularity tuning.** `sid_reward.py` also implements
+the MiniOneRec hybrid reward ([arXiv:2510.24431](https://arxiv.org/html/2510.24431v1))
+and a popularity penalty, selected from the `sid_grpo` CLI:
+
+```bash
+# MiniOneRec hybrid: binary rule reward + rank-aware hard-negative penalty
+uv run python -m llm4rec.sid_grpo --reward minionerec ...
+
+# combine with popularity tuning (second reward function, weighted 0.5)
+uv run python -m llm4rec.sid_grpo --reward minionerec --pop-weight 0.5 ...
+```
+
+- `make_minionerec_reward`: exact hit → 1.0; wrong valid item →
+  `-mag/Σmag` with `mag = 1/log(rank+1)`, penalties summing to −1 per GRPO
+  group. The paper ranks wrong items by constrained-beam position; with trl's
+  sampled rollouts we rank by **frequency within the group** — a Monte-Carlo
+  confidence estimate, so the most *confidently* wrong item is punished
+  hardest. Invalid → −0.5 (the paper has no invalid case since it decodes
+  with constrained beams; we sample freely and keep invalid rate measurable).
+- `make_pop_penalty`: `-max(pop_lift, 0)` per completion — penalizes
+  retrieving above-catalog-mean-popularity items even when correct,
+  repricing the popular-guess strategy. Added as a second `reward_funcs`
+  entry with its own `reward_weights` coefficient; sweep `--pop-weight` to
+  trade HR@10 against `pop_lift` (the mitigation experiment for the +0.21
+  excess lift measured after SFT). Logged separately as `penalty/pop_mean`.
+
 **Changing it.** `--prefix-credit 0.05` scales the shaping, `0` disables it —
 a planned experiment, since the credit is itself a shortcut incentive
 (`shortcut/prefix_depth` rising while exact hits stall = neighborhood
