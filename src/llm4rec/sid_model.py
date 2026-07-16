@@ -12,7 +12,10 @@ def prepare(base: str, table: SidTable, dtype=torch.bfloat16):
     Returns (tokenizer, model, new_token_ids).
     """
     tok = AutoTokenizer.from_pretrained(base)
-    added = tok.add_tokens(table.tokens(), special_tokens=True)
+    # NOT special tokens: trl decodes GRPO rollouts with skip_special_tokens=True,
+    # which would strip the sid tokens before the reward function ever sees them.
+    # Regular added tokens still tokenize atomically but survive decoding.
+    added = tok.add_tokens(table.tokens(), special_tokens=False)
     model = AutoModelForCausalLM.from_pretrained(base, dtype=dtype)
     if len(tok) > model.get_input_embeddings().num_embeddings:
         model.resize_token_embeddings(len(tok))
