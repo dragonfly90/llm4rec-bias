@@ -267,6 +267,60 @@ def depop_reward(prompts, completions, target=None, pop_quantiles=None, **kw):
 # in grpo.py: GRPOTrainer(model=..., reward_funcs=depop_reward, ...)
 ```
 
+### Setting the reward function
+
+**Interface.** `GRPOTrainer` accepts any callable via `reward_funcs`. Per
+batch of rollouts it calls it with the completions plus **every extra column
+of the training JSONL as a batch-aligned keyword list** — that's how rewards
+receive ground truth (`target_item` here; `target`/`pop_quantiles` in the
+letter route). Return one float per completion. trl also injects
+`log_metric(name, value)`: anything you log lands in the per-step training
+logs next to reward and KL (all `shortcut/*` telemetry works this way).
+GRPO normalizes rewards within each group of `num_generations` samples of the
+same prompt, so no value network is involved.
+
+```python
+def my_reward(prompts, completions, target_item=None, log_metric=None, **kw):
+    ...                    # completions[k] is a str (or chat-message list)
+    return rewards         # list[float], one per completion
+```
+
+**Design of the built-in rewards.** Sid route (`sid_reward.py`):
+
+| outcome | reward | role |
+|---|---|---|
+| exact target item | 1.0 | the actual objective |
+| wrong item, k matching leading codes | 0.1 × k (≤ 0.3) | shaping: gradient signal while exact hits are rare (sparse 0/1 over 1,682 items leaves most groups all-zero) |
+| unparseable / unknown ID | −0.5 | prices format collapse |
+
+Two constraints set the numbers: shaping must stay well below the exact
+reward or the policy optimizes the proxy, and the penalty must be modest or
+the policy collapses to low-entropy conservative output. The letter route
+(`reward.py`) is the degenerate version: +1 / 0 / −0.5, no shaping (chance is
+already 10%).
+
+**Changing it.** `--prefix-credit 0.05` scales the shaping, `0` disables it —
+a planned experiment, since the credit is itself a shortcut incentive
+(`shortcut/prefix_depth` rising while exact hits stall = neighborhood
+farming). For custom rewards, write the same signature and swap it into
+`GRPOTrainer(reward_funcs=...)` in `sid_grpo.py` (see `depop_reward` above
+for a mitigation example). trl also accepts a *list* of reward functions and
+sums them (`reward_weights` in `GRPOConfig`) — cleaner than wrapping when you
+want accuracy and a bias penalty logged as separate curves.
+
+**Pitfalls (paid for in this repo).**
+- The reward sees decoded text, and **trl decodes rollouts with
+  `skip_special_tokens=True`** — our first GRPO run burned 3 h at reward −0.5
+  because special-flagged sid tokens were stripped before parsing. Verify
+  your parser on actual rollout decodings, not constructed strings.
+- Use one parser everywhere: reward and eval share `parse_sid`/`parse_choice`
+  so "valid" can't diverge between training and evaluation.
+- Watch `frac_reward_zero_std`: a group with identical rewards contributes
+  zero gradient; pinned at 1.0 = no learning (the canary that caught the bug).
+- Whatever you reward is what you get: the reward checks only the final
+  answer, so popularity/prefix shortcuts stay open — that's the object of
+  study, and the telemetry exists to catch it.
+
 ### Programmatic evaluation (`llm4rec.eval`)
 
 ```python
