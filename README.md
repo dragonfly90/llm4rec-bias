@@ -135,15 +135,21 @@ uv run python -m llm4rec.sid_grpo --sft-adapter runs/sid_sft/final --steps 300 -
 uv run python -m llm4rec.sid_eval --adapter runs/sid_grpo/final --max-examples 300 --out runs/eval_sid_grpo.json
 ```
 
-**SFT checkpoint results** (2 epochs, 300 test users, full-catalog retrieval
-over 1,682 items; chance HR@10 = 0.6%):
+**Results — SFT vs GRPO** (300 test users, full-catalog retrieval over 1,682
+items; chance HR@10 = 0.6%. GRPO: 300 steps, prefix-credit reward, β=0.04):
 
-| metric | value | note |
-|---|---|---|
-| HR@1 / HR@10 | 1.3% / 7.7% | ~13× over chance |
-| NDCG@10 | 0.039 | |
-| free-gen validity | 94% | unconstrained generation emits a real catalog ID |
-| **pop_lift@1** | **+0.48** | top-1 retrievals sit ~0.48 popularity quantiles above catalog mean — SFT alone already installs a strong popularity shortcut, before any RL |
+| metric | SFT (2 ep) | GRPO (300 steps) | reading |
+|---|---|---|---|
+| HR@1 | 1.3% | **1.7%** | RL improved exactly what the reward pays: top-1 exact match (+30% rel.) |
+| HR@10 | **7.7%** | 6.7% | ranking quality *below* rank 1 slipped — the reward never sees it |
+| NDCG@10 | 0.039 | 0.036 | same story |
+| free-gen validity | 94% | **100%** | the −0.5 invalid penalty worked completely |
+| pop_lift@1 | +0.48 | +0.48 | KL held the popularity profile frozen: RL neither amplified nor mitigated; the **+0.21 excess lift persists** |
+
+The GRPO row is a mild but clean **proxy-narrowing** result: training reward
+rose (−0.19 → −0.07) while held-out HR@10 fell — a positive *hacking gap* in
+the refined-metrics sense. The reward pays top-1 exact match and validity;
+the policy delivered precisely those two and nothing else.
 
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
