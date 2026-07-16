@@ -24,12 +24,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from .prompts import LETTERS, build_prompt
 
 
-def load_model(base: str, adapter: str | None, device: str):
+def load_model(base: str, adapter: str | None, device: str, sft_adapter: str | None = None):
+    """sft_adapter is merged before adapter — required for GRPO checkpoints,
+    whose LoRA is trained relative to merged-SFT weights, not the raw base."""
     tok = AutoTokenizer.from_pretrained(base)
     model = AutoModelForCausalLM.from_pretrained(base, dtype=torch.bfloat16)
-    if adapter:
-        model = PeftModel.from_pretrained(model, adapter)
-        model = model.merge_and_unload()
+    for path in (sft_adapter, adapter):
+        if path:
+            model = PeftModel.from_pretrained(model, path).merge_and_unload()
     return tok, model.to(device).eval()
 
 
@@ -108,6 +110,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--adapter", default="", help="LoRA adapter path ('' = base model)")
+    ap.add_argument("--sft-adapter", default="",
+                    help="adapter merged before --adapter (needed for GRPO checkpoints)")
     ap.add_argument("--data", default="data/test.jsonl")
     ap.add_argument("--max-examples", type=int, default=300)
     ap.add_argument("--position-probe", type=int, default=0,
@@ -117,7 +121,8 @@ def main():
 
     device = "mps" if torch.backends.mps.is_available() else \
              ("cuda" if torch.cuda.is_available() else "cpu")
-    tok, model = load_model(args.model, args.adapter or None, device)
+    tok, model = load_model(args.model, args.adapter or None, device,
+                            sft_adapter=args.sft_adapter or None)
 
     rows = [json.loads(l) for l in open(args.data)][:args.max_examples]
     result = evaluate(tok, model, device, rows, args.position_probe)

@@ -58,6 +58,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--adapter", default="", help="LoRA adapter ('' = base + fresh sid tokens)")
+    ap.add_argument("--sft-adapter", default="",
+                    help="adapter to merge BEFORE --adapter; required for GRPO "
+                         "checkpoints, which are trained on merged-SFT weights")
     ap.add_argument("--sid-table", default="data/semantic_ids.json")
     ap.add_argument("--item-meta", default="data/item_meta.json")
     ap.add_argument("--data", default="data/sid_test.jsonl")
@@ -72,6 +75,8 @@ def main():
              ("cuda" if torch.cuda.is_available() else "cpu")
     table = SidTable(args.sid_table)
     tok, model, _ = prepare(args.model, table)
+    if args.sft_adapter:
+        model = PeftModel.from_pretrained(model, args.sft_adapter).merge_and_unload()
     if args.adapter:
         model = PeftModel.from_pretrained(model, args.adapter).merge_and_unload()
     model = model.to(device).eval()
