@@ -207,6 +207,29 @@ Kendall/Spearman consistency (subsumed by flip rate at K=10), repeat-count
 lift (absent from deduplicated data), temporal calibration (ml-100k too small
 for clean timestamped eval windows).
 
+### Metric refinements from the reward-hacking / bias paper list
+
+Refinements to the selection above, drawn from a curated paper list
+(popularity/propensity bias in LLM recommenders, feedback loops, RLHF reward
+hacking):
+
+| Refinement | Definition | Replaces / augments | Source idea | Status |
+|---|---|---|---|---|
+| **User-anchored popularity lift (ΔGAP)** | pop(top-1 retrieval) − mean pop(that user's own history), averaged over users | catalog-mean `pop_lift` — ΔGAP separates "model over-popularizes" from "this user genuinely likes popular items"; a per-user justified baseline instead of one global +0.27 | *LLMs as Recommender Systems: A Study of Popularity Bias* (GAP metrics) | ➕ needs `history_items` column in `sid_data` |
+| **IPS-corrected HR@K / NDCG@K** | weight each test hit by inverse propensity ∝ 1/pop(target)^γ (self-normalized) | raw HR/NDCG, which reward popular-guessing because test targets are themselves popular (0.77 mean quantile) — IPS makes tail hits count more, so the metric can't be farmed by popularity | *Mitigating Propensity Bias of LLMs for RecSys*; *ReCRec* | ➕ easy add to `sid_eval` |
+| **Per-tier HR (head/mid/tail)** | HR@10 computed separately for targets in top/mid/bottom popularity tiers | single aggregate HR — a model can score 7.7% overall with literally 0% on tail targets; the tier split exposes it | cold-start bias paper (segment-wise evaluation) | ➕ easy add to `sid_eval` |
+| **Exposure Gini + aggregate diversity** | Gini coefficient of item exposure counts across all users' top-K, plus % of catalog ever retrieved | long-tail coverage@10 alone — Gini captures *concentration* among the items that do get exposed | *Modeling and Counteracting Exposure Bias*; *Feedback Loop and Bias Amplification* | ➕ easy add to `sid_eval` |
+| **Feedback-loop amplification curve** | simulate T loop iterations (append top-1 retrieval to history, re-retrieve); plot pop_lift / Gini vs T | all static metrics — bias that looks mild in one shot can compound in the loop; LLM rec loops shown to collapse diversity | *Echoes in the Loop*; *Feedback Loop and Bias Amplification* | ➕ planned (new script, no retraining) |
+| **Hacking gap** | Δ(training reward) − Δ(held-out HR@10), per checkpoint segment | eyeballing reward vs HR curves — makes "reward up, utility flat" a single reportable number per training phase | *Correlated Proxies* (hacking = proxy–true divergence); ODIN | ➕ computable from GRPO logs + checkpoint evals |
+| **Reward–cue correlation** | per-step Pearson r between sample reward and cue value (popularity of generated item; prefix depth) | threshold-watching on `shortcut/*` — rising r(reward, cue) is the early-warning signal that the policy is monetizing the cue, before HR moves | ODIN (disentangling reward from length proxy, transplanted to popularity/prefix proxies) | ➕ add inside reward funcs via `log_metric` |
+| **Primacy–recency asymmetry** (letter route) | acc(first ⅓ of slots) − acc(last ⅓) from the position-probe curve | scalar `spread` — the base model showed A-and-J concentration, i.e. *both* primacy and recency effects; the asymmetry says which dominates | *Cognitive Biases in LLMs for News Recommendation* | ➕ trivial add to `eval` position probe |
+
+Reward-model-side papers on the list (attention hacking, shortcut
+rectification in preference-based reward learning) are noted but out of scope:
+this lab uses rule-based rewards, so there is no learned RM to hack — the
+analogous failure surface here is the *reward-parsing* path (see the
+skip_special_tokens incident above).
+
 ## Python interface
 
 The CLI entrypoints are thin wrappers; everything is importable for custom
