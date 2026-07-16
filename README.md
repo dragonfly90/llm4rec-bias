@@ -2,7 +2,8 @@
 
 A minimal, locally-runnable LLM4Rec pipeline on MovieLens-100K for studying
 **RL shortcut / bias mitigation** in recommendation. Scaled-down version of the
-RL-Shortcut-Lab execution spec (MLLMRec-R1 route): LoRA SFT → LoRA merge →
+[RL-Shortcut-Lab execution spec](https://rl-shortcut-lab.myflorey111.chatgpt.site/zh/literature)
+(MLLMRec-R1 route): LoRA SFT → LoRA merge →
 GRPO with KL constraint, with the four bias-cue dimensions controllable in the
 data layer and measured by dedicated probes.
 
@@ -179,6 +180,32 @@ are the measured baselines (ml-100k, default generation settings):
 | History recency | `--history N` variants | histories saturate the cap (~8–9 shown, min 5) | recency experiments need regenerated datasets (e.g. N=2 vs N=8), not post-hoc analysis |
 | Semantic prior (sid route) | `shortcut/prefix_depth` on wrong answers | random item pair shares **0.025** levels on average | wrong-answer depth ≫ 0.03 = right-neighborhood learning; rising depth with stalling exact hits = prefix-credit farming (the route's signature reward hack) |
 | Invalid rate | `shortcut/invalid_rate` | n/a (all training answers valid by construction) | model-side references: 94% valid free-gen after SFT; 100% under constrained decoding |
+
+## Selected metrics per bias (following the RL-Shortcut-Lab representation section)
+
+Metric selection based on the lab's five bias families and representation
+methods R1–R6 ([RL-Shortcut-Lab literature: representation](https://rl-shortcut-lab.myflorey111.chatgpt.site/zh/literature#representation)).
+Each bias gets one cheap screening metric plus one representation probe for
+the causal stage:
+
+| Bias | Selected behavioral metric | Why this one | Selected representation method | Status |
+|---|---|---|---|---|
+| Popularity | popularity lift (quantile form) + head/mid/tail share + long-tail coverage@10 | lift is the headline number (+0.48 vs +0.27 justified); share/coverage catch tail collapse that lift can hide | R1 probing: linear probe decoding item popularity from the hidden state at the answer position, across base→SFT→GRPO checkpoints | lift ✅; share/coverage ➕ planned in `sid_eval` |
+| Position (letter route) | permutation flip rate + position-probe `spread` | flip rate (does the chosen *item* change when candidates are shuffled?) is the cleanest causal signal; Kendall-τ adds little beyond it for K=10 lists | R6 activation intervention: project out the position-decodable direction, re-measure spread | spread ✅; flip rate ➕ planned in `eval` |
+| Repetition / exposure | exposure calibration: KL between popularity histogram of top-1 retrievals and of held-out targets | data dedupes consecutive repeats, so repeat-count lift is structurally absent; calibration subsumes excess lift into a distribution-level check | R3 shortcut-subspace: variance of answer logits explained by a popularity direction | ➕ planned in `sid_eval` |
+| Recency | history reversal gap: ΔHR@10 + prediction flip rate under reversed history order | content-identical, order-only manipulation → causal reading; recent-window concentration comes free via sid prefix overlap with last-k vs earlier history | R4 geometry: prefix depth of prediction vs history position | ➕ planned eval flag, no retraining |
+| Textual framing | neutral-vs-evaluative gap (paired A/B on identical examples) | the direct instrument; note the measured caveat — markers only discriminate on `--neg-sampling uniform` data (73.7% marker saturation otherwise) | R1 probing: framing-marker decodability from candidate representations | framing flag ✅; paired eval ➕ |
+
+Cross-cutting for causal → mitigation: **R2 (CKA drift)** across the four
+spec checkpoints (base / SFT / GRPO-mid / GRPO-final) screens *where* RL moved
+representations; **R6 (scale/project the identified subspace)** is the
+mechanism-guided mitigation benchmarked against the generic KL-strength sweep
+under equal budget — the spec's core comparison.
+
+Deliberately not selected: ARP (redundant with quantile lift),
+Kendall/Spearman consistency (subsumed by flip rate at K=10), repeat-count
+lift (absent from deduplicated data), temporal calibration (ml-100k too small
+for clean timestamped eval windows).
 
 ## Python interface
 
