@@ -82,7 +82,7 @@ def make_sid_reward(sid_table_path: str, item_meta_path: str,
 
 
 def make_minionerec_reward(sid_table_path: str, item_meta_path: str,
-                           num_generations: int, invalid_penalty: float = -0.5):
+                           num_generations: int, invalid_penalty: float = -1.5):
     """MiniOneRec hybrid reward: R = R_rule + R_rank (frequency-rank variant).
 
     Within each GRPO group (num_generations completions of one prompt):
@@ -92,6 +92,12 @@ def make_minionerec_reward(sid_table_path: str, item_meta_path: str,
                             generated most often in the group (most confident)
       invalid            -> invalid_penalty (paper has no invalid case: it
                             decodes with constrained beams; we sample freely)
+
+    invalid_penalty defaults to -1.5: it must be strictly worse than the worst
+    valid outcome (rank penalty bottoms at -1.0, plus any weighted pop penalty
+    ~-0.25). At -0.5 the policy learns to hide in invalidity — measured: a
+    300-step run drove invalid_rate from 0.40 to 0.70 because garbage was
+    cheaper than being confidently wrong.
     """
     table = SidTable(sid_table_path)
     meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
