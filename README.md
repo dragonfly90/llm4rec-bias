@@ -181,10 +181,22 @@ the popularity pressure went nowhere: rollout `pop_lift` held at ~0.43 and
 the per-step pop penalty (`penalty/pop_mean`) *drifted up* 0.26 → 0.34. With
 the invalidity door sealed, the policy chose to **pay the popularity tax
 rather than diversify** — popular guesses still earn enough exact-hit reward
-to be worth −0.5 × lift. Lesson for the sweep: at this weight the penalty
-reprices but does not reroute; next probes are `--pop-weight 1.0` and a
-variant that penalizes only *wrong* popular answers (sparing correct ones).
-Eval-side numbers: pending.
+to be worth −0.5 × lift. Eval side confirms it — the four-run ladder:
+
+| metric | SFT | GRPO (prefix) | +pop v1 (open hatch) | +pop v2 (closed hatch) |
+|---|---|---|---|---|
+| HR@1 | 1.3% | **1.7%** | 0.3% | 1.0% |
+| HR@10 | **7.7%** | 6.7% | 6.7% | 6.7% |
+| NDCG@10 | 0.039 | 0.036 | 0.029 | 0.033 |
+| pop_lift@1 | +0.48 | +0.48 | +0.42 | **+0.48** |
+| free-gen validity | 94% | 100% | 64% | **100%** |
+
+Under greedy constrained decoding the v2 popularity profile is *identical to
+baseline* (+0.479): at weight 0.5 the penalty **repriced but did not
+reroute** — the policy absorbed the tax and kept the popular-guess strategy
+(v1's apparent lift reduction was purchased with the validity collapse, not
+by genuine diversification). Sweep continues: `--pop-weight 1.0`, and a
+variant that penalizes only *wrong* popular answers (sparing correct hits).
 
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
