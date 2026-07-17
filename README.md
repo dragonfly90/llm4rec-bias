@@ -262,9 +262,12 @@ for clean timestamped eval windows).
 
 ### Metric refinements from the reward-hacking / bias paper list
 
-Refinements to the selection above, drawn from a curated paper list
-(popularity/propensity bias in LLM recommenders, feedback loops, RLHF reward
-hacking):
+Refinements to the selection above, drawn from the
+[curated paper list](https://docs.google.com/document/d/1ovjbt635409rSpyq3FBChWpblxwLujOLdM3YtXMXT1w/)
+(15 papers: popularity/propensity/semantic bias in LLM recommenders, feedback
+loops, exposure bias, RLHF reward hacking — incl. *A Study of Popularity
+Bias*, *SPLIT*, *Mitigating Propensity Bias*, *ReCRec*, *Echoes in the Loop*,
+*ODIN*, *Correlated Proxies*):
 
 | Refinement | Definition | Replaces / augments | Source idea | Status |
 |---|---|---|---|---|
@@ -273,8 +276,8 @@ hacking):
 | **Per-tier HR (head/mid/tail)** | HR@10 computed separately for targets in top/mid/bottom popularity tiers | single aggregate HR — a model can score 7.7% overall with literally 0% on tail targets; the tier split exposes it | cold-start bias paper (segment-wise evaluation) | ➕ easy add to `sid_eval` |
 | **Exposure Gini + aggregate diversity** | Gini coefficient of item exposure counts across all users' top-K, plus % of catalog ever retrieved | long-tail coverage@10 alone — Gini captures *concentration* among the items that do get exposed | *Modeling and Counteracting Exposure Bias*; *Feedback Loop and Bias Amplification* | ➕ easy add to `sid_eval` |
 | **Feedback-loop amplification curve** | simulate T loop iterations (append top-1 retrieval to history, re-retrieve); plot pop_lift / Gini vs T | all static metrics — bias that looks mild in one shot can compound in the loop; LLM rec loops shown to collapse diversity | *Echoes in the Loop*; *Feedback Loop and Bias Amplification* | ➕ planned (new script, no retraining) |
-| **Hacking gap** | Δ(training reward) − Δ(held-out HR@10), per checkpoint segment | eyeballing reward vs HR curves — makes "reward up, utility flat" a single reportable number per training phase | *Correlated Proxies* (hacking = proxy–true divergence); ODIN | ➕ computable from GRPO logs + checkpoint evals |
-| **Reward–cue correlation** | per-step Pearson r between sample reward and cue value (popularity of generated item; prefix depth) | threshold-watching on `shortcut/*` — rising r(reward, cue) is the early-warning signal that the policy is monetizing the cue, before HR moves | ODIN (disentangling reward from length proxy, transplanted to popularity/prefix proxies) | ➕ add inside reward funcs via `log_metric` |
+| **Hacking gap** | Δ(training reward) − Δ(held-out HR@10), per checkpoint segment | eyeballing reward vs HR curves — makes "reward up, utility flat" a single reportable number per training phase | *Correlated Proxies* (hacking = proxy–true divergence); ODIN | ✅ **measured**: vanilla GRPO reward +0.12 while HR@10 −1.0pp (positive gap = proxy narrowing); v1 pop run reward flat while validity −36pp (gap via new shortcut) |
+| **Reward–cue correlation** | per-step Pearson r between sample reward and cue value (popularity of generated item; prefix depth) | threshold-watching on `shortcut/*` — rising r(reward, cue) is the early-warning signal that the policy is monetizing the cue, before HR moves | ODIN (disentangling reward from length proxy, transplanted to popularity/prefix proxies) | ➕ add inside reward funcs via `log_metric`; the v1/v2 runs show why it's needed — `pop_lift` alone couldn't distinguish repricing from rerouting |
 | **Primacy–recency asymmetry** (letter route) | acc(first ⅓ of slots) − acc(last ⅓) from the position-probe curve | scalar `spread` — the base model showed A-and-J concentration, i.e. *both* primacy and recency effects; the asymmetry says which dominates | *Cognitive Biases in LLMs for News Recommendation* | ➕ trivial add to `eval` position probe |
 
 Reward-model-side papers on the list (attention hacking, shortcut
