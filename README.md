@@ -151,6 +151,28 @@ rose (−0.19 → −0.07) while held-out HR@10 fell — a positive *hacking gap
 the refined-metrics sense. The reward pays top-1 exact match and validity;
 the policy delivered precisely those two and nothing else.
 
+**Mitigation run #1 — and the invalidity escape hatch.** 300 GRPO steps with
+`--reward minionerec --pop-weight 0.5` (rank-aware penalty + popularity
+penalty, invalid at the original −0.5):
+
+| metric | SFT | GRPO (prefix) | GRPO (minionerec + pop, v1) |
+|---|---|---|---|
+| HR@1 | 1.3% | 1.7% | **0.3%** |
+| HR@10 | 7.7% | 6.7% | 6.7% |
+| pop_lift@1 | +0.48 | +0.48 | **+0.42** |
+| free-gen validity | 94% | 100% | **64%** |
+
+The popularity penalty *did* bite (+0.48 → +0.42, removing ~⅓ of the excess
+lift) — but the run mostly discovered a **new shortcut**: with rank penalties
+reaching −1.0 and the pop penalty stacked on top, a *wrong valid* answer cost
+up to ≈ −1.25 while an *invalid* one cost only −0.5, so the policy learned to
+hide in garbage output (train invalid_rate 0.40 → 0.70; KL 3× the vanilla
+run). A mitigation reward changed the action ordering and the policy exited
+through the cheapest door — the exact dynamic this lab exists to observe.
+MiniOneRec never faces this because constrained-beam rollouts make invalid
+output impossible; free-sampling variants must keep invalid **strictly
+dominated** (fixed: invalid_penalty now defaults to −1.5).
+
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
 0.5 = median). `pop_lift@1` is the mean quantile of the model's rank-1
