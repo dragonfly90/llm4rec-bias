@@ -219,6 +219,42 @@ the semantic-prior cue becomes first-class — `shortcut/prefix_depth` tracks
 whether GRPO learns to farm prefix credit (right neighborhood, wrong movie)
 instead of exact retrieval.
 
+## Metrics reference
+
+Every metric in the project, where it is computed, and what it tells you.
+
+**Retrieval / task quality** (evaluation scripts):
+
+| metric | where | definition |
+|---|---|---|
+| HR@1 / HR@10 | `sid_eval` (constrained beam over full catalog), `eval` (letter log-probs over 10 candidates) | target in top-1 / top-K |
+| NDCG@5 / NDCG@10 | same | 1/log2(rank+2) if target ranked, else 0 |
+| free-gen validity | `sid_eval` | unconstrained greedy generation emits a real catalog ID |
+| eval loss / token accuracy | SFT logs | per-token quality on held-out answers |
+
+**Bias / shortcut — implemented**:
+
+| metric | where | cue | definition |
+|---|---|---|---|
+| `pop_lift@1` | `sid_eval` | popularity | popularity quantile of top-1 retrieval − catalog mean (0.50); justified level from held-out targets = +0.27 |
+| `pop_lift` | `eval` (letter) | popularity | chosen item's quantile − candidate-set mean (exposure-matched, so justified ≈ 0) |
+| `shortcut/pop_lift` | GRPO logs, per step | popularity | same quantity on training rollouts |
+| position-probe curve + `spread` | `eval --position-probe` | position | accuracy with the target re-placed at every slot, content fixed; spread = max − min (0 = position-blind, 1 = pure position policy) |
+| `chosen_pos_hist`, `shortcut/chosen_pos_mean` | `eval` / GRPO logs | position | marginal distribution of chosen slots |
+| `shortcut/invalid_rate` | GRPO logs, per step | format | fraction of rollouts that parse to no valid ID (the metric that exposed both RL bugs) |
+| `shortcut/prefix_depth` | GRPO logs, per step | semantic prior | matching leading code levels between generation and target (chance = 0.025); rising depth with stalling hits = prefix-credit farming |
+| `penalty/pop_mean`, `reward/rank_penalty_mean` | GRPO logs | — | magnitudes of the active reward components |
+| `kl`, `reward`, `frac_reward_zero_std` | GRPO logs | — | policy drift from reference; training reward; fraction of zero-gradient groups (pinned at 1.0 = no learning) |
+| hacking gap | computed from logs + checkpoint evals | proxy–true divergence | Δ(training reward) − Δ(held-out HR@10) per phase; measured: +0.12 reward vs −1.0pp HR@10 on vanilla GRPO |
+
+**Bias / shortcut — planned** (documented in the refinement table below):
+ΔGAP (user-anchored pop lift) · IPS-corrected HR/NDCG · per-tier HR
+(head/mid/tail) · exposure Gini + aggregate diversity · feedback-loop
+amplification curve · reward–cue correlation · primacy–recency asymmetry ·
+framing gap (paired neutral/evaluative eval) · history reversal gap ·
+permutation flip rate · representation probes R1–R6 (linear probing, CKA
+drift, activation intervention).
+
 ## Dataset-side cue baselines (measured)
 
 Each probe compares a model metric against what the *data* justifies. These
