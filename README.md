@@ -183,20 +183,28 @@ the invalidity door sealed, the policy chose to **pay the popularity tax
 rather than diversify** — popular guesses still earn enough exact-hit reward
 to be worth −0.5 × lift. Eval side confirms it — the four-run ladder:
 
-| metric | SFT | GRPO (prefix) | +pop v1 (open hatch) | +pop v2 (closed hatch) |
-|---|---|---|---|---|
-| HR@1 | 1.3% | **1.7%** | 0.3% | 1.0% |
-| HR@10 | **7.7%** | 6.7% | 6.7% | 6.7% |
-| NDCG@10 | 0.039 | 0.036 | 0.029 | 0.033 |
-| pop_lift@1 | +0.48 | +0.48 | +0.42 | **+0.48** |
-| free-gen validity | 94% | 100% | 64% | **100%** |
+| metric | SFT | GRPO (prefix) | +pop v1 (open hatch) | +pop v2 (w=0.5) | +pop w=1.0 |
+|---|---|---|---|---|---|
+| HR@1 | 1.3% | **1.7%** | 0.3% | 1.0% | **1.7%** |
+| HR@10 | **7.7%** | 6.7% | 6.7% | 6.7% | 7.3% |
+| NDCG@10 | 0.039 | 0.036 | 0.029 | 0.033 | 0.038 |
+| pop_lift@1 | +0.48 | +0.48 | +0.42 | +0.48 | **+0.46** |
+| free-gen validity | 94% | 100% | 64% | 100% | 100% |
 
-Under greedy constrained decoding the v2 popularity profile is *identical to
-baseline* (+0.479): at weight 0.5 the penalty **repriced but did not
-reroute** — the policy absorbed the tax and kept the popular-guess strategy
-(v1's apparent lift reduction was purchased with the validity collapse, not
-by genuine diversification). Sweep continues: `--pop-weight 1.0`, and a
-variant that penalizes only *wrong* popular answers (sparing correct hits).
+Sweep reading:
+- **w=0.5 repriced but did not reroute** — greedy-decode popularity identical
+  to baseline (+0.479); the policy absorbed the tax and kept the
+  popular-guess strategy (v1's apparent lift reduction was purchased with the
+  validity collapse, not diversification).
+- **w=1.0 is the best RL checkpoint overall and the first genuine (small)
+  reroute**: ties the best HR@1, best GRPO-stage HR@10 (7.3% — the rank-aware
+  penalty defending ranking depth, as MiniOneRec intends), 100% validity, and
+  a real −0.02 lift reduction (+0.48 → +0.46, removing ~12% of the +0.21
+  excess) at **zero accuracy cost** — a Pareto improvement over w=0.5.
+- The dose–response is nonlinear: 0.5 buys nothing, 1.0 starts to bite.
+  Next arms: `--pop-weight 2.0`, and the *wrong-only* penalty (tax popular
+  guesses only when they miss), which breaks the tax-vs-hit-rate tradeoff
+  instead of shifting it.
 
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
