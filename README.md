@@ -173,6 +173,19 @@ MiniOneRec never faces this because constrained-beam rollouts make invalid
 output impossible; free-sampling variants must keep invalid **strictly
 dominated** (fixed: invalid_penalty now defaults to −1.5).
 
+**Mitigation run #2 — hatch closed, policy pays the tax.** Same reward
+(`minionerec + pop-weight 0.5`) with invalid at −1.5. Training-side (300
+steps): the fix works — invalid_rate now *falls* 0.36 → 0.21 (v1: rose to
+0.70), reward climbs −0.93 → −0.75, KL moderate (0.08, vs 0.28 in v1). But
+the popularity pressure went nowhere: rollout `pop_lift` held at ~0.43 and
+the per-step pop penalty (`penalty/pop_mean`) *drifted up* 0.26 → 0.34. With
+the invalidity door sealed, the policy chose to **pay the popularity tax
+rather than diversify** — popular guesses still earn enough exact-hit reward
+to be worth −0.5 × lift. Lesson for the sweep: at this weight the penalty
+reprices but does not reroute; next probes are `--pop-weight 1.0` and a
+variant that penalizes only *wrong* popular answers (sparing correct ones).
+Eval-side numbers: pending.
+
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
 0.5 = median). `pop_lift@1` is the mean quantile of the model's rank-1
