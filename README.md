@@ -271,25 +271,25 @@ or the method papers:
 
 | metric | source |
 |---|---|
-| HR@K, NDCG@K | standard IR/rec metrics; used as preference targets by the lab spec and MiniOneRec ([arXiv:2510.24431](https://arxiv.org/html/2510.24431v1)) |
-| popularity lift (`pop_lift`, `pop_lift@1`) | lab spec popularity cues; rooted in #3 *A Study of Popularity Bias* (ARP/GAP family) |
-| ΔGAP (user-anchored lift) | #3 *A Study of Popularity Bias* — GAP compares recommendation popularity to the user's own profile |
-| head/mid/tail share, per-tier HR | #8 *Revealing Potential Biases … Cold Start* (segment-wise evaluation) |
-| IPS-corrected HR/NDCG | #6 *Mitigating Propensity Bias of LLMs for RecSys*; #12 *ReCRec* (exposure-aware debiased evaluation) |
-| exposure Gini, aggregate diversity / coverage | #11 *Modeling and Counteracting Exposure Bias*; #10 *Feedback Loop and Bias Amplification* |
-| feedback-loop amplification curve | #13 *Echoes in the Loop* (LLM rec loops); #10 (simulation methodology) |
+| HR@K, NDCG@K | standard IR/rec metrics; used as preference targets by the lab spec and MiniOneRec ([arXiv:2510.24431](https://arxiv.org/abs/2510.24431)) |
+| popularity lift (`pop_lift`, `pop_lift@1`) | lab spec popularity cues; rooted in #3 *A Study of Popularity Bias* ([arXiv:2406.01285](https://arxiv.org/abs/2406.01285), ARP/GAP family) |
+| ΔGAP (user-anchored lift) | #3 *A Study of Popularity Bias* ([arXiv:2406.01285](https://arxiv.org/abs/2406.01285)) — GAP compares recommendation popularity to the user's own profile |
+| head/mid/tail share, per-tier HR | #8 *Revealing Potential Biases … Cold Start* ([arXiv:2508.20401](https://arxiv.org/abs/2508.20401), segment-wise evaluation) |
+| IPS-corrected HR/NDCG | #6 *Mitigating Propensity Bias of LLMs for RecSys* ([arXiv:2409.20052](https://arxiv.org/abs/2409.20052)); #12 *ReCRec* ([ACM TOIS](https://doi.org/10.1145/3672275), exposure-aware debiased evaluation) |
+| exposure Gini, aggregate diversity / coverage | #11 *Modeling and Counteracting Exposure Bias* ([arXiv:2001.04832](https://arxiv.org/abs/2001.04832)); #10 *Feedback Loop and Bias Amplification* ([arXiv:2007.13019](https://arxiv.org/abs/2007.13019)) |
+| feedback-loop amplification curve | #13 *Echoes in the Loop* ([arXiv:2602.07442](https://arxiv.org/abs/2602.07442), LLM rec loops); #10 ([arXiv:2007.13019](https://arxiv.org/abs/2007.13019), simulation methodology) |
 | position-probe curve, `spread`, position-conditioned selection | lab spec position cues (permutation swaps, position-conditioned selection rate) |
 | permutation flip rate, Kendall/Spearman consistency | lab spec position metrics (flip rate selected, consistency dropped) |
-| primacy–recency asymmetry | #9 *Cognitive Biases in LLMs for News Recommendation* |
-| framing gap (neutral vs evaluative), paraphrase consistency | lab spec textual-framing metrics; #9 for the cognitive-bias framing |
+| primacy–recency asymmetry | #9 *Cognitive Biases in LLMs for News Recommendation* ([arXiv:2410.02897](https://arxiv.org/abs/2410.02897)) |
+| framing gap (neutral vs evaluative), paraphrase consistency | lab spec textual-framing metrics; #9 ([arXiv:2410.02897](https://arxiv.org/abs/2410.02897)) for the cognitive-bias framing |
 | history reversal gap, recent-window concentration | lab spec recency metrics |
-| `invalid_rate` | lab spec per-step deliverable; MiniOneRec motivates the constrained-decoding contrast |
-| `prefix_depth` (semantic-neighborhood tracking) | this repo, instantiating the lab's semantic-prior cue on TIGER/MiniOneRec-style hierarchical SIDs; semantic-bias framing per #4, #7 (*LLM-RecG*) |
-| rank-aware penalty (`reward/rank_penalty_mean`) | MiniOneRec hybrid reward ([arXiv:2510.24431](https://arxiv.org/html/2510.24431v1)) |
-| popularity penalty (`penalty/pop_mean`) | reward-side mitigation per #5 *SPLIT*, #6 (propensity correction as training signal) |
-| hacking gap | #15 *Correlated Proxies* (hacking = proxy–true divergence); #14 *ODIN* |
-| reward–cue correlation | #14 *ODIN* (reward vs length proxy, transplanted to popularity/prefix cues); #15 |
-| `kl`, group-normalized reward, `frac_reward_zero_std` | GRPO method (DeepSeekMath) as packaged by trl; KL-as-mitigation per the lab spec |
+| `invalid_rate` | lab spec per-step deliverable; MiniOneRec ([arXiv:2510.24431](https://arxiv.org/abs/2510.24431)) motivates the constrained-decoding contrast |
+| `prefix_depth` (semantic-neighborhood tracking) | this repo, instantiating the lab's semantic-prior cue on TIGER/MiniOneRec-style hierarchical SIDs; semantic-bias framing per #4 ([arXiv:2601.09478](https://arxiv.org/abs/2601.09478)), #7 *LLM-RecG* ([arXiv:2501.19232](https://arxiv.org/abs/2501.19232)) |
+| rank-aware penalty (`reward/rank_penalty_mean`) | MiniOneRec hybrid reward ([arXiv:2510.24431](https://arxiv.org/abs/2510.24431)) |
+| popularity penalty (`penalty/pop_mean`) | reward-side mitigation per #5 *SPLiT* ([OpenReview](https://openreview.net/forum?id=M36IXztHLF), no arXiv); #6 ([arXiv:2409.20052](https://arxiv.org/abs/2409.20052), propensity correction as training signal) |
+| hacking gap | #15 *Correlated Proxies* ([arXiv:2403.03185](https://arxiv.org/abs/2403.03185), hacking = proxy–true divergence); #14 *ODIN* ([arXiv:2402.07319](https://arxiv.org/abs/2402.07319)) |
+| reward–cue correlation | #14 *ODIN* ([arXiv:2402.07319](https://arxiv.org/abs/2402.07319), reward vs length proxy, transplanted to popularity/prefix cues); #15 ([arXiv:2403.03185](https://arxiv.org/abs/2403.03185)) |
+| `kl`, group-normalized reward, `frac_reward_zero_std` | GRPO method (DeepSeekMath, [arXiv:2402.03300](https://arxiv.org/abs/2402.03300)) as packaged by trl; KL-as-mitigation per the lab spec |
 | representation probes R1–R6 (probing, CKA drift, subspace estimation, activation intervention) | lab spec representation section; #1, #2 (attention-hacking / shortcut rectification in reward models) motivate the representation-level diagnosis |
 
 #1 and #2 are otherwise out of scope: this lab's rewards are rule-based, so
