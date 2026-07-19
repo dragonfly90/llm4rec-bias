@@ -357,6 +357,28 @@ Bias*, *SPLIT*, *Mitigating Propensity Bias*, *ReCRec*, *Echoes in the Loop*,
 | **Reward–cue correlation** | per-step Pearson r between sample reward and cue value (popularity of generated item; prefix depth) | threshold-watching on `shortcut/*` — rising r(reward, cue) is the early-warning signal that the policy is monetizing the cue, before HR moves | ODIN (disentangling reward from length proxy, transplanted to popularity/prefix proxies) | ➕ add inside reward funcs via `log_metric`; the v1/v2 runs show why it's needed — `pop_lift` alone couldn't distinguish repricing from rerouting |
 | **Primacy–recency asymmetry** (letter route) | acc(first ⅓ of slots) − acc(last ⅓) from the position-probe curve | scalar `spread` — the base model showed A-and-J concentration, i.e. *both* primacy and recency effects; the asymmetry says which dominates | *Cognitive Biases in LLMs for News Recommendation* | ➕ trivial add to `eval` position probe |
 
+**Primacy–recency asymmetry, expanded.** The serial-position effect from
+cognitive psychology, transplanted to LLM candidate lists: *primacy* =
+over-selecting early slots (anchoring on the first items read), *list-recency*
+= over-selecting late slots (closest to the generation position; a distinct
+mechanism — attention sinks vs context proximity — so mitigations may fix one
+end and not the other). Signed: positive → primacy dominates, negative →
+recency dominates. It complements `spread` rather than replacing it; the two
+together classify the curve's shape:
+
+| `spread` | asymmetry | reading |
+|---|---|---|
+| ~0 | ~0 | position-blind (the goal) |
+| high | strongly + | pure primacy policy ("always pick A") |
+| high | strongly − | pure list-recency policy ("always pick the last item") |
+| high | ~0 | U-shaped: both ends favored, middle ignored |
+
+Our zero-shot baseline is the instructive case: choices split ~70% slot A /
+~30% slot J — spread 1.0, asymmetry ~+0.4 (positive but far from ceiling).
+A pure-primacy story would be wrong; the model exhibits the full **U-shaped
+serial-position curve** of the psychology literature. Letter route only — the
+sid route has no candidate list.
+
 Reward-model-side papers on the list (attention hacking, shortcut
 rectification in preference-based reward learning) are noted but out of scope:
 this lab uses rule-based rewards, so there is no learned RM to hack — the
