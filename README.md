@@ -326,6 +326,71 @@ the causal stage:
 | Recency | history reversal gap: ΔHR@10 + prediction flip rate under reversed history order | content-identical, order-only manipulation → causal reading; recent-window concentration comes free via sid prefix overlap with last-k vs earlier history | R4 geometry: prefix depth of prediction vs history position | ➕ planned eval flag, no retraining |
 | Textual framing | neutral-vs-evaluative gap (paired A/B on identical examples) | the direct instrument; note the measured caveat — markers only discriminate on `--neg-sampling uniform` data (73.7% marker saturation otherwise) | R1 probing: framing-marker decodability from candidate representations | framing flag ✅; paired eval ➕ |
 
+### Equations
+
+Notation: test users $u = 1..N$; catalog $\mathcal{I}$ (with $|\mathcal{I}| = 1682$);
+$\hat\imath_u$ = model's top-1 item for $u$; $i^*_u$ = held-out target;
+$\mathrm{top}K(u)$ = the top-$K$ retrieved list; $q(i) \in [0,1]$ = popularity
+quantile of item $i$; $\bar q_\mathcal{C} = \frac{1}{|\mathcal{I}|}\sum_i q(i) \approx 0.5$.
+
+**Popularity**
+
+$$\text{pop-lift@1} = \frac{1}{N}\sum_u q(\hat\imath_u) - \bar q_\mathcal{C},
+\qquad
+\text{excess} = \text{pop-lift@1} - \underbrace{\Big(\tfrac{1}{N}\sum_u q(i^*_u) - \bar q_\mathcal{C}\Big)}_{\text{justified} \;=\; +0.27}$$
+
+$$\mathrm{share}_T = \frac{1}{N}\big|\{u : \hat\imath_u \in T\}\big|
+\quad (T \in \{\text{head},\text{mid},\text{tail}\}),
+\qquad
+\mathrm{coverage@}K = \frac{\big|\bigcup_u \mathrm{top}K(u)\big|}{|\mathcal{I}|}$$
+
+R1 probe: fit linear $w$ on hidden state $h_u$ at the answer position to
+predict $q(i^*_u)$; report $R^2$ per checkpoint — rising decodability across
+SFT→GRPO = the popularity direction strengthening.
+
+**Position** (letter route; $A(p)$ = accuracy when the target sits at slot $p$, $C=10$ slots)
+
+$$\mathrm{spread} = \max_p A(p) - \min_p A(p),
+\qquad
+\mathrm{asym} = \underset{p \in \text{first } C/3}{\mathrm{mean}}\, A(p) \;-\; \underset{p \in \text{last } C/3}{\mathrm{mean}}\, A(p)$$
+
+$$\mathrm{flip} = \frac{1}{N}\sum_u \mathbf{1}\big[\,\mathrm{item}(c_u^{\pi}) \neq \mathrm{item}(c_u^{\pi'})\,\big]
+\quad \text{for independent permutations } \pi, \pi' \text{ of the same candidates}$$
+
+**Repetition / exposure** ($e_i$ = exposure count of item $i$ over all users' top-$K$; $\hat P$, $P^{\ast}$ = popularity-bin histograms of top-1 retrievals and of held-out targets)
+
+$$\mathrm{Gini} = \frac{\sum_i \sum_j |e_i - e_j|}{2\,|\mathcal{I}| \sum_i e_i}
+\qquad
+\mathrm{calib} = D_{\mathrm{KL}}\big(\hat P \,\|\, P^*\big) = \sum_b \hat P(b) \log \frac{\hat P(b)}{P^*(b)}$$
+
+**Recency** ($\mathrm{rev}(u)$ = the same prompt with history order reversed)
+
+$$\Delta_{\mathrm{rev}} = \mathrm{HR@10} - \mathrm{HR@10}^{\mathrm{rev}},
+\qquad
+\mathrm{flip}_{\mathrm{rev}} = \frac{1}{N}\sum_u \mathbf{1}\big[\hat\imath_u \neq \hat\imath_u^{\mathrm{rev}}\big]$$
+
+**Textual framing** (paired neutral / evaluative renderings of identical content)
+
+$$\Delta_{\mathrm{frame}} = M^{\mathrm{eval}} - M^{\mathrm{neut}} \;\; (M = \mathrm{HR@1}),
+\qquad
+\mathrm{consist} = \frac{1}{N}\sum_u \mathbf{1}\big[\hat\imath_u^{\mathrm{eval}} = \hat\imath_u^{\mathrm{neut}}\big]$$
+
+**Semantic prior** (sid route; codes $c_\ell(i)$, $L=4$ levels)
+
+$$\mathrm{depth}(i, t) = \max\{\ell : c_1(i)..c_\ell(i) = c_1(t)..c_\ell(t)\},
+\qquad
+\mathbb{E}_{\text{random pair}}[\mathrm{depth}] = 0.025$$
+
+**Cross-cutting** (per training phase; $R$ = mean training reward, $k$ indexes rollouts in a step)
+
+$$\text{hacking-gap} = \Delta R_{\mathrm{train}} - \Delta\,\mathrm{HR@10}_{\mathrm{heldout}},
+\qquad
+r_{\mathrm{cue}} = \mathrm{corr}_k\big(R_k,\; q(i_k)\big)$$
+
+R2 drift between checkpoint representations $X, Y$ (linear CKA):
+
+$$\mathrm{CKA}(X, Y) = \frac{\|Y^\top X\|_F^2}{\|X^\top X\|_F \,\|Y^\top Y\|_F}$$
+
 Cross-cutting for causal → mitigation: **R2 (CKA drift)** across the four
 spec checkpoints (base / SFT / GRPO-mid / GRPO-final) screens *where* RL moved
 representations; **R6 (scale/project the identified subspace)** is the
