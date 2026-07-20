@@ -465,6 +465,44 @@ A pure-primacy story would be wrong; the model exhibits the full **U-shaped
 serial-position curve** of the psychology literature. Letter route only — the
 sid route has no candidate list.
 
+**Refinement equations.** Notation as in the Equations subsection above
+($H_u$ = user $u$'s history items; tiers $T$ partition the catalog by
+popularity; superscript $(t)$ indexes feedback-loop iterations).
+
+User-anchored popularity lift (ΔGAP) — recommendation popularity measured
+against *this user's own* profile instead of the catalog mean:
+
+$$\Delta\mathrm{GAP} = \frac{1}{N}\sum_u \Big( q(\hat\imath_u) - \frac{1}{|H_u|}\sum_{j \in H_u} q(j) \Big)$$
+
+IPS-corrected HR@K (self-normalized) — hits weighted by inverse exposure
+propensity $p_i \propto \mathrm{count}(i)^{\gamma}$ (default $\gamma = 1$), so
+tail hits count more and the metric can't be farmed by popular guessing:
+
+$$\mathrm{HR}^{\mathrm{IPS}}@K = \frac{\sum_u w_u \,\mathbf{1}\big[i^{\ast}_u \in \mathrm{top}K(u)\big]}{\sum_u w_u},
+\qquad w_u = \frac{1}{p_{i^{\ast}_u}}$$
+
+Per-tier HR — the aggregate split by target popularity tier (a model can post
+7.7% overall with 0% on tail targets):
+
+$$\mathrm{HR}_T@K = \underset{u\,:\, i^{\ast}_u \in T}{\mathrm{mean}}\ \mathbf{1}\big[i^{\ast}_u \in \mathrm{top}K(u)\big]$$
+
+Feedback-loop amplification — append the top-1 retrieval to the history and
+re-retrieve for $T$ iterations; report the trajectory and its endpoint drift:
+
+$$H_u^{(t+1)} = H_u^{(t)} \oplus \hat\imath_u^{(t)},
+\qquad
+\mathrm{amp}(T) = \mathrm{pop\text{-}lift}^{(T)} - \mathrm{pop\text{-}lift}^{(0)},
+\quad \text{likewise } \mathrm{Gini}^{(t)}, \ \mathrm{coverage}^{(t)}$$
+
+Reward–cue correlation (per training step $s$, over rollouts $k$):
+
+$$r^{(s)}_{\mathrm{cue}} = \mathrm{corr}_k\big(R_k,\ q(i_k)\big)
+\quad \text{and analogously with } \mathrm{depth}(i_k, t_k) \text{ as the cue}$$
+
+Exposure Gini / coverage and the primacy–recency asymmetry are formalized in
+the Equations subsection above; the hacking gap is
+$\Delta R_{\mathrm{train}} - \Delta\,\mathrm{HR@10}$ per training phase.
+
 Reward-model-side papers on the list (attention hacking, shortcut
 rectification in preference-based reward learning) are noted but out of scope:
 this lab uses rule-based rewards, so there is no learned RM to hack — the
