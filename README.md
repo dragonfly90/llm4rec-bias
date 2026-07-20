@@ -329,7 +329,7 @@ the causal stage:
 ### Equations
 
 Notation: test users $u = 1..N$; catalog $\mathcal{I}$ (with $|\mathcal{I}| = 1682$);
-$\hat\imath_u$ = model's top-1 item for $u$; $i^*_u$ = held-out target;
+$\hat\imath_u$ = model's top-1 item for $u$; $i^{\ast}_u$ = held-out target;
 $\mathrm{top}K(u)$ = the top-$K$ retrieved list; $q(i) \in [0,1]$ = popularity
 quantile of item $i$; $\bar q_\mathcal{C} = \frac{1}{|\mathcal{I}|}\sum_i q(i) \approx 0.5$.
 
@@ -337,7 +337,7 @@ quantile of item $i$; $\bar q_\mathcal{C} = \frac{1}{|\mathcal{I}|}\sum_i q(i) \
 
 $$\text{pop-lift@1} = \frac{1}{N}\sum_u q(\hat\imath_u) - \bar q_\mathcal{C},
 \qquad
-\text{excess} = \text{pop-lift@1} - \underbrace{\Big(\tfrac{1}{N}\sum_u q(i^*_u) - \bar q_\mathcal{C}\Big)}_{\text{justified} \;=\; +0.27}$$
+\text{excess} = \text{pop-lift@1} - \underbrace{\Big(\tfrac{1}{N}\sum_u q(i^{\ast}_u) - \bar q_\mathcal{C}\Big)}_{\text{justified} \;=\; +0.27}$$
 
 $$\mathrm{share}_T = \frac{1}{N}\big|\{u : \hat\imath_u \in T\}\big|
 \quad (T \in \{\text{head},\text{mid},\text{tail}\}),
@@ -345,7 +345,7 @@ $$\mathrm{share}_T = \frac{1}{N}\big|\{u : \hat\imath_u \in T\}\big|
 \mathrm{coverage@}K = \frac{\big|\bigcup_u \mathrm{top}K(u)\big|}{|\mathcal{I}|}$$
 
 R1 probe: fit linear $w$ on hidden state $h_u$ at the answer position to
-predict $q(i^*_u)$; report $R^2$ per checkpoint — rising decodability across
+predict $q(i^{\ast}_u)$; report $R^2$ per checkpoint — rising decodability across
 SFT→GRPO = the popularity direction strengthening.
 
 **Position** (letter route; $A(p)$ = accuracy when the target sits at slot $p$, $C=10$ slots)
@@ -357,11 +357,32 @@ $$\mathrm{spread} = \max_p A(p) - \min_p A(p),
 $$\mathrm{flip} = \frac{1}{N}\sum_u \mathbf{1}\big[\,\mathrm{item}(c_u^{\pi}) \neq \mathrm{item}(c_u^{\pi'})\,\big]
 \quad \text{for independent permutations } \pi, \pi' \text{ of the same candidates}$$
 
-**Repetition / exposure** ($e_i$ = exposure count of item $i$ over all users' top-$K$; $\hat P$, $P^{\ast}$ = popularity-bin histograms of top-1 retrievals and of held-out targets)
+**Repetition / exposure** — exposure of item $i$ is its count across all
+users' top-$K$ lists:
+
+$$e_i = \sum_u \mathbf{1}\big[\,i \in \mathrm{top}K(u)\,\big],
+\qquad
+\text{(sum over the whole catalog, zero-exposure items included)}$$
+
+Concentration (0 = equal exposure, 1 = one item takes everything) and
+distribution-level calibration against held-out behavior ($\hat P$, $P^{\ast}$ =
+popularity-bin histograms of top-1 retrievals and of held-out targets):
 
 $$\mathrm{Gini} = \frac{\sum_i \sum_j |e_i - e_j|}{2\,|\mathcal{I}| \sum_i e_i}
 \qquad
-\mathrm{calib} = D_{\mathrm{KL}}\big(\hat P \,\|\, P^*\big) = \sum_b \hat P(b) \log \frac{\hat P(b)}{P^*(b)}$$
+\mathrm{calib} = D_{\mathrm{KL}}\big(\hat P \,\|\, P^{\ast}\big) = \sum_b \hat P(b) \log \frac{\hat P(b)}{P^{\ast}(b)}$$
+
+Aggregate diversity (share of catalog ever recommended) and, for completeness,
+the lab spec's repeat-count lift ($n_u(i)$ = times $i$ appears in $u$'s history;
+structurally absent here since the data dedupes consecutive repeats):
+
+$$\mathrm{coverage@}K = \frac{\big|\{i : e_i > 0\}\big|}{|\mathcal{I}|},
+\qquad
+\mathrm{lift}(n) = \frac{\Pr\big[\hat\imath_u = i \mid n_u(i) = n\big]}{\Pr\big[\hat\imath_u = i \mid n_u(i) = 0\big]}$$
+
+Gini and coverage fail in different directions — many items exposed once
+keeps coverage high while Gini stays near 1; a small uniform set does the
+reverse — so both are reported.
 
 **Recency** ($\mathrm{rev}(u)$ = the same prompt with history order reversed)
 
