@@ -256,8 +256,8 @@ Every metric in the project, where it is computed, and what it tells you.
 | hacking gap | computed from logs + checkpoint evals | proxy–true divergence | Δ(training reward) − Δ(held-out HR@10) per phase; measured: +0.12 reward vs −1.0pp HR@10 on vanilla GRPO |
 
 **Bias / shortcut — planned** (documented in the refinement table below):
-ΔGAP (user-anchored pop lift) · IPS-corrected HR/NDCG · per-tier HR
-(head/mid/tail) · exposure Gini + aggregate diversity · feedback-loop
+**ΔGAP (user-anchored pop lift)** · IPS-corrected HR/NDCG · per-tier HR
+(head/mid/tail) · **exposure Gini + aggregate diversity** · feedback-loop
 amplification curve · reward–cue correlation · primacy–recency asymmetry ·
 framing gap (paired neutral/evaluative eval) · history reversal gap ·
 permutation flip rate · representation probes R1–R6 (linear probing, CKA
@@ -273,10 +273,10 @@ or the method papers:
 |---|---|
 | HR@K, NDCG@K | standard IR/rec metrics; used as preference targets by the lab spec and MiniOneRec ([arXiv:2510.24431](https://arxiv.org/abs/2510.24431)) |
 | popularity lift (`pop_lift`, `pop_lift@1`) | lab spec popularity cues; rooted in #3 *A Study of Popularity Bias* ([arXiv:2406.01285](https://arxiv.org/abs/2406.01285), ARP/GAP family) |
-| ΔGAP (user-anchored lift) | #3 *A Study of Popularity Bias* ([arXiv:2406.01285](https://arxiv.org/abs/2406.01285)) — GAP compares recommendation popularity to the user's own profile |
+| **ΔGAP (user-anchored lift)** | #3 *A Study of Popularity Bias* ([arXiv:2406.01285](https://arxiv.org/abs/2406.01285)) — GAP compares recommendation popularity to the user's own profile |
 | head/mid/tail share, per-tier HR | #8 *Revealing Potential Biases … Cold Start* ([arXiv:2508.20401](https://arxiv.org/abs/2508.20401), segment-wise evaluation) |
 | IPS-corrected HR/NDCG | #6 *Mitigating Propensity Bias of LLMs for RecSys* ([arXiv:2409.20052](https://arxiv.org/abs/2409.20052)); #12 *ReCRec* ([ACM TOIS](https://doi.org/10.1145/3672275), exposure-aware debiased evaluation) |
-| exposure Gini, aggregate diversity / coverage | #11 *Modeling and Counteracting Exposure Bias* ([arXiv:2001.04832](https://arxiv.org/abs/2001.04832)); #10 *Feedback Loop and Bias Amplification* ([arXiv:2007.13019](https://arxiv.org/abs/2007.13019)) |
+| **exposure Gini, aggregate diversity / coverage** | #11 *Modeling and Counteracting Exposure Bias* ([arXiv:2001.04832](https://arxiv.org/abs/2001.04832)); #10 *Feedback Loop and Bias Amplification* ([arXiv:2007.13019](https://arxiv.org/abs/2007.13019)) |
 | feedback-loop amplification curve | #13 *Echoes in the Loop* ([arXiv:2602.07442](https://arxiv.org/abs/2602.07442), LLM rec loops); #10 ([arXiv:2007.13019](https://arxiv.org/abs/2007.13019), simulation methodology) |
 | position-probe curve, `spread`, position-conditioned selection | lab spec position cues (permutation swaps, position-conditioned selection rate) |
 | permutation flip rate, Kendall/Spearman consistency | lab spec position metrics (flip rate selected, consistency dropped) |
@@ -469,7 +469,7 @@ sid route has no candidate list.
 ($H_u$ = user $u$'s history items; tiers $T$ partition the catalog by
 popularity; superscript $(t)$ indexes feedback-loop iterations).
 
-User-anchored popularity lift (ΔGAP) — recommendation popularity measured
+**User-anchored popularity lift (ΔGAP)** — recommendation popularity measured
 against *this user's own* profile instead of the catalog mean:
 
 $$\Delta\mathrm{GAP} = \frac{1}{N}\sum_u \Big( q(\hat\imath_u) - \frac{1}{|H_u|}\sum_{j \in H_u} q(j) \Big)$$
