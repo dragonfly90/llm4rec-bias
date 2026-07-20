@@ -465,6 +465,20 @@ A pure-primacy story would be wrong; the model exhibits the full **U-shaped
 serial-position curve** of the psychology literature. Letter route only — the
 sid route has no candidate list.
 
+### Priority refinements — spreadsheet
+
+The four popularity-side priority metrics are also packaged as
+[`docs/bias_metric_refinements.xlsx`](docs/bias_metric_refinements.xlsx)
+(one row per metric: definition, equation, what it replaces, source links,
+status). Its contents:
+
+| Metric | Definition | Equation (plain text) | Replaces / augments | Source | Status |
+|---|---|---|---|---|---|
+| **User-anchored popularity lift (ΔGAP)** | pop(top-1 retrieval) − mean pop(the user's own history), averaged over users | `ΔGAP = (1/N) Σ_u [ q(î_u) − (1/\|H_u\|) Σ_{j∈H_u} q(j) ]` | catalog-mean `pop_lift` — separates "model over-popularizes" from "user genuinely likes popular items" (global +0.27 baseline → per-user) | [arXiv:2406.01285](https://arxiv.org/abs/2406.01285) | ➕ needs `history_items` column in `sid_data` |
+| **IPS-corrected HR@K / NDCG@K** | test hits weighted by inverse propensity, self-normalized; tail hits count more, so popular-guessing can't farm the metric | `HR_IPS@K = Σ_u w_u·1[i*_u ∈ topK(u)] / Σ_u w_u`, `w_u = 1/p(i*_u)`, `p(i) ∝ count(i)^γ` (γ=1) | raw HR/NDCG, which reward popular-guessing (held-out targets average 0.77 quantile) | [arXiv:2409.20052](https://arxiv.org/abs/2409.20052); [ReCRec](https://doi.org/10.1145/3672275) | ➕ easy add to `sid_eval` |
+| **Per-tier HR (head/mid/tail)** | HR@10 computed separately for targets in top/mid/bottom popularity tiers | `HR_T@K = mean over {u : i*_u ∈ T} of 1[i*_u ∈ topK(u)]` | single aggregate HR — 7.7% overall can hide 0% on tail targets | [arXiv:2508.20401](https://arxiv.org/abs/2508.20401) | ➕ easy add to `sid_eval` |
+| **Exposure Gini + aggregate diversity** | Gini of item exposure counts over all users' top-K (whole catalog, zeros included) + % of catalog ever retrieved | `Gini = Σ_i Σ_j \|e_i − e_j\| / (2·\|I\|·Σ_i e_i)`; `coverage@K = \|∪_u topK(u)\| / \|I\|` | coverage alone — Gini separates "same 15 blockbusters for everyone" from "popular but different" | [arXiv:2001.04832](https://arxiv.org/abs/2001.04832); [arXiv:2007.13019](https://arxiv.org/abs/2007.13019) | ➕ easy add to `sid_eval` |
+
 **Refinement equations.** Notation as in the Equations subsection above
 ($H_u$ = user $u$'s history items; tiers $T$ partition the catalog by
 popularity; superscript $(t)$ indexes feedback-loop iterations).
