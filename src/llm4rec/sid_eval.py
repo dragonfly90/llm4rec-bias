@@ -3,7 +3,17 @@
 Constrained beam search over the trie of all valid semantic IDs gives a
 top-K item ranking against the entire catalog (~1.4K items) -> HR@K, NDCG@K.
 Also reports unconstrained top-1 validity (does free generation produce a
-real ID?) and popularity lift of the top-1 retrieved item.
+real ID?) and several popularity/exposure bias metrics:
+
+  pop_lift@1   q(top-1) - catalog mean (global baseline)
+  delta_gap    q(top-1) - the user's own history-popularity mean, averaged
+               over users (ΔGAP; per-user baseline, arXiv:2406.01285). Needs
+               the hist_pop_mean dataset column.
+  exposure_gini  Gini of item exposure counts across all users' top-K, over
+                 the whole catalog incl. never-retrieved items (0 = uniform
+                 exposure, 1 = all exposure on one item; arXiv:2001.04832,
+                 2007.13019).
+  coverage@K   fraction of the catalog that appears in at least one top-K.
 """
 
 import argparse
@@ -16,6 +26,18 @@ from peft import PeftModel
 
 from .semid import SidTable
 from .sid_model import prepare
+
+
+def gini(counts: np.ndarray) -> float:
+    """Gini coefficient of a non-negative exposure vector (zeros included)."""
+    x = np.sort(np.asarray(counts, dtype=np.float64))
+    n = len(x)
+    total = x.sum()
+    if n == 0 or total == 0:
+        return 0.0
+    # efficient form of the double-sum definition; i = 1..n over ascending x
+    idx = np.arange(1, n + 1)
+    return float((2.0 * np.sum(idx * x)) / (n * total) - (n + 1) / n)
 
 
 @torch.no_grad()
@@ -85,7 +107,9 @@ def main():
     pop_mean = float(np.mean([m["pop_quantile"] for m in meta.values()]))
     rows = [json.loads(l) for l in open(args.data)][:args.max_examples]
 
-    hr1, hrk, ndcg, lifts = [], [], [], []
+    from collections import Counter
+    hr1, hrk, ndcg, lifts, gaps = [], [], [], [], []
+    exposure = Counter()  # item -> times it appears in any user's top-K
     for r in rows:
         items = beam_retrieve(tok, model, device, table, r["prompt"], args.topk)
         tgt = r["target_item"]
@@ -93,8 +117,16 @@ def main():
         hr1.append(rank == 0)
         hrk.append(rank is not None)
         ndcg.append(1.0 / np.log2(rank + 2) if rank is not None else 0.0)
+        exposure.update(items)
         if items:
-            lifts.append(meta[items[0]]["pop_quantile"] - pop_mean)
+            q_top1 = meta[items[0]]["pop_quantile"]
+            lifts.append(q_top1 - pop_mean)
+            if r.get("hist_pop_mean") is not None:  # ΔGAP: per-user baseline
+                gaps.append(q_top1 - r["hist_pop_mean"])
+
+    # exposure over the FULL catalog (never-retrieved items count as 0)
+    exposure_vec = np.array([exposure.get(i, 0) for i in table.codes])
+    coverage = float((exposure_vec > 0).sum() / len(exposure_vec))
 
     valid = [free_top1_valid(tok, model, device, table, r["prompt"])
              for r in rows[:args.free_gen_n]]
@@ -105,6 +137,9 @@ def main():
         f"hr@{args.topk}": float(np.mean(hrk)),
         f"ndcg@{args.topk}": float(np.mean(ndcg)),
         "pop_lift@1": float(np.mean(lifts)) if lifts else None,
+        "delta_gap": float(np.mean(gaps)) if gaps else None,
+        "exposure_gini": gini(exposure_vec),
+        f"coverage@{args.topk}": coverage,
         "free_gen_valid_rate": float(np.mean(valid)) if valid else None,
         "model": args.model, "adapter": args.adapter, "data": args.data,
     }
