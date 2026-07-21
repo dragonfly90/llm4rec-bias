@@ -37,6 +37,11 @@ def main():
     ap.add_argument("--pop-weight", type=float, default=0.0,
                     help="weight of the popularity penalty added as a second "
                          "reward function (0 = off)")
+    ap.add_argument("--pop-anchor", choices=["catalog", "user"], default="catalog",
+                    help="catalog: tax vs catalog-mean popularity (uniform); "
+                         "user: tax vs the user's own history popularity (ΔGAP-aligned)")
+    ap.add_argument("--pop-wrong-only", action="store_true",
+                    help="apply the popularity penalty only to incorrect retrievals")
     args = ap.parse_args()
 
     ds = load_dataset("json", data_files=args.train)["train"]
@@ -61,7 +66,9 @@ def main():
     reward_funcs = [main_reward]
     reward_weights = [1.0]
     if args.pop_weight > 0:
-        reward_funcs.append(make_pop_penalty(args.sid_table, args.item_meta))
+        reward_funcs.append(make_pop_penalty(args.sid_table, args.item_meta,
+                                             anchor=args.pop_anchor,
+                                             wrong_only=args.pop_wrong_only))
         reward_weights.append(args.pop_weight)
 
     cfg = GRPOConfig(

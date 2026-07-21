@@ -132,26 +132,46 @@ def make_minionerec_reward(sid_table_path: str, item_meta_path: str,
     return minionerec_reward
 
 
-def make_pop_penalty(sid_table_path: str, item_meta_path: str):
-    """Popularity tuning: -max(pop_lift, 0) per completion.
+def make_pop_penalty(sid_table_path: str, item_meta_path: str,
+                     anchor: str = "catalog", wrong_only: bool = False):
+    """Popularity tuning: -max(q(item) - baseline, 0) per completion.
 
-    Penalizes retrieving items above the catalog-mean popularity, even when
-    correct — it reprices the popular-guess strategy. Use as a second entry in
-    reward_funcs with its own GRPOConfig.reward_weights entry; sweep the
-    weight to trade HR against pop_lift.
+    anchor="catalog": baseline = catalog-mean popularity (~0.5), a uniform tax.
+      Measured to reprice but not reroute — it taxes popular recommendations
+      equally for every user, so it fights the exact-hit reward on the ~77% of
+      users whose true next item is genuinely popular.
+    anchor="user": baseline = this user's own history-popularity mean
+      (hist_pop_mean, a dataset column). This is a direct gradient on the ΔGAP
+      metric: recommending a blockbuster to a blockbuster-lover costs ~0, while
+      an over-popular pick for a niche user is penalized hard. Concentrates the
+      pressure where the bias actually lives without raising the global weight.
+    wrong_only=True: apply the penalty only when the generated item != target.
+      A correct retrieval is, by definition, the right popularity for that user,
+      so it is never taxed — breaking the tax-vs-hit-rate tradeoff instead of
+      shifting it.
+
+    Use as a second entry in reward_funcs with its own GRPOConfig.reward_weights.
     """
     table = SidTable(sid_table_path)
     meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
     catalog_pop_mean = float(np.mean([m["pop_quantile"] for m in meta.values()]))
 
-    def pop_penalty(prompts, completions, target_item=None, log_metric=None, **kwargs):
+    def pop_penalty(prompts, completions, target_item=None, hist_pop_mean=None,
+                    log_metric=None, **kwargs):
+        if anchor == "user" and hist_pop_mean is None:
+            raise ValueError("anchor='user' needs the hist_pop_mean dataset column "
+                             "(regenerate data with the updated sid_data.py)")
         rewards = []
-        for c in completions:
+        for k, c in enumerate(completions):
             item = table.parse(_text(c))
             if item is None:
                 rewards.append(0.0)  # invalidity is priced by the main reward
-            else:
-                rewards.append(-max(meta[item]["pop_quantile"] - catalog_pop_mean, 0.0))
+                continue
+            if wrong_only and item == target_item[k]:
+                rewards.append(0.0)
+                continue
+            baseline = hist_pop_mean[k] if anchor == "user" else catalog_pop_mean
+            rewards.append(-max(meta[item]["pop_quantile"] - baseline, 0.0))
         if log_metric is not None:
             log_metric("penalty/pop_mean", float(-np.mean(rewards)))
         return rewards

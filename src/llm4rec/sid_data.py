@@ -44,6 +44,9 @@ def build_example(user, hist_items, target, titles, table, popq,
         "answer": table.sid(target),
         "target_item": target,
         "pop_quantile": popq.get(target, 0.5),
+        # mean popularity of this user's shown history — the per-user baseline
+        # for the user-anchored (ΔGAP) popularity penalty in sid_reward.py
+        "hist_pop_mean": float(sum(popq.get(i, 0.5) for i in hist) / len(hist)),
         "user": user,
     }
 
