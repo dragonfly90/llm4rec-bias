@@ -3,7 +3,10 @@
 Pipeline: item text (title + genres) -> frozen MiniLM embedding -> residual
 k-means (L levels x K codes) -> collision-breaking final level. Each item
 becomes a token sequence like <s0_12><s1_45><s2_7><s3_0>: similar movies share
-code prefixes, so the ID itself carries semantics.
+code prefixes, so the ID itself carries semantics. Residual-quantized semantic
+IDs for generative recommendation follow TIGER (https://arxiv.org/abs/2305.05065)
+and MiniOneRec (https://arxiv.org/abs/2510.24431); here residual k-means stands
+in for the RQ-VAE.
 
 Also provides the token/trie utilities used by SFT, GRPO and constrained
 beam-search eval.

@@ -4,7 +4,7 @@ make_sid_reward       prefix-credit shaping: 1.0 exact / 0.1 per matching
                       leading code level / -0.5 invalid. The prefix credit is
                       itself a researchable cue (neighborhood farming);
                       disable with prefix_credit=0.
-make_minionerec_reward  MiniOneRec hybrid (arXiv:2510.24431): binary rule
+make_minionerec_reward  MiniOneRec hybrid (https://arxiv.org/abs/2510.24431): binary rule
                       reward + rank-aware hard-negative penalty. The paper
                       ranks by beam position; with trl's sampled rollouts we
                       rank wrong items by their frequency within the GRPO
@@ -85,6 +85,8 @@ def make_minionerec_reward(sid_table_path: str, item_meta_path: str,
                            num_generations: int, invalid_penalty: float = -1.5):
     """MiniOneRec hybrid reward: R = R_rule + R_rank (frequency-rank variant).
 
+    Paper: https://arxiv.org/abs/2510.24431
+
     Within each GRPO group (num_generations completions of one prompt):
       exact hit          -> 1.0
       wrong valid item   -> -mag / sum(mags) over the group's wrong items,
@@ -142,9 +144,10 @@ def make_pop_penalty(sid_table_path: str, item_meta_path: str,
       users whose true next item is genuinely popular.
     anchor="user": baseline = this user's own history-popularity mean
       (hist_pop_mean, a dataset column). This is a direct gradient on the ΔGAP
-      metric: recommending a blockbuster to a blockbuster-lover costs ~0, while
-      an over-popular pick for a niche user is penalized hard. Concentrates the
-      pressure where the bias actually lives without raising the global weight.
+      metric (https://arxiv.org/abs/2406.01285): recommending a blockbuster to a
+      blockbuster-lover costs ~0, while an over-popular pick for a niche user is
+      penalized hard. Concentrates the pressure where the bias actually lives
+      without raising the global weight.
     wrong_only=True: apply the penalty only when the generated item != target.
       A correct retrieval is, by definition, the right popularity for that user,
       so it is never taxed — breaking the tax-vs-hit-rate tradeoff instead of

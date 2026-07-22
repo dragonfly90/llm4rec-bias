@@ -7,19 +7,20 @@ real ID?) and several popularity/exposure bias metrics:
 
   pop_lift@1   q(top-1) - catalog mean (global baseline)
   delta_gap    q(top-1) - the user's own history-popularity mean, averaged
-               over users (ΔGAP; per-user baseline, arXiv:2406.01285). Needs
-               the hist_pop_mean dataset column.
+               over users (ΔGAP; per-user baseline). Needs the hist_pop_mean
+               dataset column.  https://arxiv.org/abs/2406.01285
   exposure_gini  Gini of item exposure counts across all users' top-K, over
                  the whole catalog incl. never-retrieved items (0 = uniform
-                 exposure, 1 = all exposure on one item; arXiv:2001.04832,
-                 2007.13019).
+                 exposure, 1 = all exposure on one item).
+                 https://arxiv.org/abs/2001.04832  https://arxiv.org/abs/2007.13019
   coverage@K   fraction of the catalog that appears in at least one top-K.
   hr_ips@K,    HR/NDCG re-weighted by inverse target propensity
   ndcg_ips@K   (w = 1/max(count,1)^gamma, self-normalized) so tail hits count
-               more — a popularity-farming policy can't inflate them
-               (arXiv:2409.20052, 3672275).
+               more — a popularity-farming policy can't inflate them.
+               https://arxiv.org/abs/2409.20052  https://doi.org/10.1145/3672275
   hr_by_tier   HR@K split by the target's popularity tier (head/mid/tail =
-               top/mid/bottom third of the quantile range; arXiv:2508.20401).
+               top/mid/bottom third of the quantile range).
+               https://arxiv.org/abs/2508.20401
 """
 
 import argparse
