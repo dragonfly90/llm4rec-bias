@@ -14,6 +14,12 @@ real ID?) and several popularity/exposure bias metrics:
                  exposure, 1 = all exposure on one item; arXiv:2001.04832,
                  2007.13019).
   coverage@K   fraction of the catalog that appears in at least one top-K.
+  hr_ips@K,    HR/NDCG re-weighted by inverse target propensity
+  ndcg_ips@K   (w = 1/max(count,1)^gamma, self-normalized) so tail hits count
+               more — a popularity-farming policy can't inflate them
+               (arXiv:2409.20052, 3672275).
+  hr_by_tier   HR@K split by the target's popularity tier (head/mid/tail =
+               top/mid/bottom third of the quantile range; arXiv:2508.20401).
 """
 
 import argparse
@@ -90,6 +96,9 @@ def main():
     ap.add_argument("--topk", type=int, default=10)
     ap.add_argument("--free-gen-n", type=int, default=50,
                     help="check unconstrained validity on N examples")
+    ap.add_argument("--ips-gamma", type=float, default=1.0,
+                    help="propensity exponent for IPS-corrected HR/NDCG: "
+                         "weight = 1/max(count,1)^gamma (0 = uncorrected)")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
 
@@ -110,13 +119,19 @@ def main():
     from collections import Counter
     hr1, hrk, ndcg, lifts, gaps = [], [], [], [], []
     exposure = Counter()  # item -> times it appears in any user's top-K
+    # per-tier HR: bucket by target popularity quantile (bottom/mid/top third)
+    tier_hits = {"head": [], "mid": [], "tail": []}
+    # IPS-corrected HR/NDCG: inverse-propensity weights over the target
+    ips_w, ips_hit_w, ips_ndcg_w = [], [], []
     for r in rows:
         items = beam_retrieve(tok, model, device, table, r["prompt"], args.topk)
         tgt = r["target_item"]
         rank = items.index(tgt) if tgt in items else None
+        hit = rank is not None
+        dcg = 1.0 / np.log2(rank + 2) if hit else 0.0
         hr1.append(rank == 0)
-        hrk.append(rank is not None)
-        ndcg.append(1.0 / np.log2(rank + 2) if rank is not None else 0.0)
+        hrk.append(hit)
+        ndcg.append(dcg)
         exposure.update(items)
         if items:
             q_top1 = meta[items[0]]["pop_quantile"]
@@ -124,9 +139,21 @@ def main():
             if r.get("hist_pop_mean") is not None:  # ΔGAP: per-user baseline
                 gaps.append(q_top1 - r["hist_pop_mean"])
 
+        # per-tier HR by the TARGET's popularity (thirds of the quantile range)
+        q_tgt = meta[tgt]["pop_quantile"]
+        tier = "tail" if q_tgt < 1 / 3 else ("mid" if q_tgt < 2 / 3 else "head")
+        tier_hits[tier].append(hit)
+
+        # IPS: rarer targets get higher weight, w = 1/max(count,1)^gamma (self-normalized)
+        w = 1.0 / max(meta[tgt].get("count", 1), 1) ** args.ips_gamma
+        ips_w.append(w)
+        ips_hit_w.append(w * hit)
+        ips_ndcg_w.append(w * dcg)
+
     # exposure over the FULL catalog (never-retrieved items count as 0)
     exposure_vec = np.array([exposure.get(i, 0) for i in table.codes])
     coverage = float((exposure_vec > 0).sum() / len(exposure_vec))
+    ips_denom = sum(ips_w)
 
     valid = [free_top1_valid(tok, model, device, table, r["prompt"])
              for r in rows[:args.free_gen_n]]
@@ -136,11 +163,16 @@ def main():
         f"hr@1": float(np.mean(hr1)),
         f"hr@{args.topk}": float(np.mean(hrk)),
         f"ndcg@{args.topk}": float(np.mean(ndcg)),
+        f"hr_ips@{args.topk}": float(sum(ips_hit_w) / ips_denom) if ips_denom else None,
+        f"ndcg_ips@{args.topk}": float(sum(ips_ndcg_w) / ips_denom) if ips_denom else None,
+        "hr_by_tier": {t: (float(np.mean(h)) if h else None) for t, h in tier_hits.items()},
+        "tier_n": {t: len(h) for t, h in tier_hits.items()},
         "pop_lift@1": float(np.mean(lifts)) if lifts else None,
         "delta_gap": float(np.mean(gaps)) if gaps else None,
         "exposure_gini": gini(exposure_vec),
         f"coverage@{args.topk}": coverage,
         "free_gen_valid_rate": float(np.mean(valid)) if valid else None,
+        "ips_gamma": args.ips_gamma,
         "model": args.model, "adapter": args.adapter, "data": args.data,
     }
     print(json.dumps(result, indent=2))

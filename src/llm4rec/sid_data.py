@@ -70,7 +70,8 @@ def main():
     counts, popq = popularity_stats(seqs)
     table = SidTable(args.sid_table)
 
-    json.dump({int(i): {"title": titles.get(i, ""), "pop_quantile": popq.get(i, 0.5)}
+    json.dump({int(i): {"title": titles.get(i, ""), "pop_quantile": popq.get(i, 0.5),
+                        "count": int(counts.get(i, 0))}  # training interactions; for IPS weights
                for i in table.codes},
               open(out / "item_meta.json", "w"))
 
