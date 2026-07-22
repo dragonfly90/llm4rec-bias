@@ -180,3 +180,37 @@ def make_pop_penalty(sid_table_path: str, item_meta_path: str,
         return rewards
 
     return pop_penalty
+
+
+def make_rare_hit_bonus(sid_table_path: str, item_meta_path: str, gamma: float = 0.5):
+    """Propensity-weighted exact-hit bonus: + 1/max(count,1)^gamma when correct.
+
+    The reward-side mirror of the IPS-corrected HR metric. The main reward pays a
+    flat +1.0 for any exact hit, so the policy maximizes it by farming popular
+    targets (measured: hr_by_tier head 10.8% / mid 0% / tail 0%). This bonus adds
+    almost nothing for a correct blockbuster (count~490 -> +0.045) but a large
+    amount for a correct rare item (count 1 -> +1.0), so within a GRPO group the
+    advantage points toward retrieving rare targets correctly — lifting mid/tail
+    HR and hr_ips@K. Wrong / invalid completions get 0 (their cost stays with the
+    main reward). gamma matches the IPS metric's propensity exponent; 0.5 (1/√count)
+    is a gentler default than the metric's 1.0 to limit reward variance.
+
+    Use as a second entry in reward_funcs with its own GRPOConfig.reward_weights.
+    https://arxiv.org/abs/2409.20052  https://arxiv.org/abs/2508.20401
+    """
+    table = SidTable(sid_table_path)
+    meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
+
+    def rare_hit_bonus(prompts, completions, target_item=None, log_metric=None, **kwargs):
+        rewards = []
+        for k, c in enumerate(completions):
+            item = table.parse(_text(c))
+            if item is not None and item == target_item[k]:
+                rewards.append(1.0 / max(meta[item].get("count", 1), 1) ** gamma)
+            else:
+                rewards.append(0.0)
+        if log_metric is not None:
+            log_metric("bonus/rare_hit_mean", float(np.mean(rewards)))
+        return rewards
+
+    return rare_hit_bonus

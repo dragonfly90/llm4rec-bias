@@ -13,7 +13,8 @@ from trl import GRPOConfig, GRPOTrainer
 
 from .semid import SidTable
 from .sid_model import prepare
-from .sid_reward import make_minionerec_reward, make_pop_penalty, make_sid_reward
+from .sid_reward import (make_minionerec_reward, make_pop_penalty,
+                         make_rare_hit_bonus, make_sid_reward)
 
 
 def main():
@@ -42,6 +43,11 @@ def main():
                          "user: tax vs the user's own history popularity (ΔGAP-aligned)")
     ap.add_argument("--pop-wrong-only", action="store_true",
                     help="apply the popularity penalty only to incorrect retrievals")
+    ap.add_argument("--rare-hit-weight", type=float, default=0.0,
+                    help="weight of the propensity-weighted exact-hit bonus "
+                         "(+1/count^gamma when correct; 0 = off) — targets tail/IPS HR")
+    ap.add_argument("--rare-hit-gamma", type=float, default=0.5,
+                    help="propensity exponent for the rare-hit bonus")
     args = ap.parse_args()
 
     ds = load_dataset("json", data_files=args.train)["train"]
@@ -70,6 +76,10 @@ def main():
                                              anchor=args.pop_anchor,
                                              wrong_only=args.pop_wrong_only))
         reward_weights.append(args.pop_weight)
+    if args.rare_hit_weight > 0:
+        reward_funcs.append(make_rare_hit_bonus(args.sid_table, args.item_meta,
+                                                gamma=args.rare_hit_gamma))
+        reward_weights.append(args.rare_hit_weight)
 
     cfg = GRPOConfig(
         output_dir=args.out,
