@@ -231,6 +231,12 @@ Two findings, one of them a reframe of the whole popularity story:
   coverage **7.4%** say the model recommends the same ~120 blockbusters to
   everyone — 93% of the catalog is never retrieved by anyone. `pop_lift`/ΔGAP
   both partly miss this; the exposure metrics expose it.
+- **Accuracy is almost entirely popularity-farmed.** Split by target tier,
+  SFT scores **head 10.8% / mid 0% / tail 0%** (n = 212/73/15) — it gets *zero*
+  of the 88 non-head targets. IPS-corrected HR@10 (tail hits up-weighted) is
+  **0.6%** against a raw 7.7% — a 13× collapse. The aggregate HR is real but
+  it is bought entirely on popular items; per-tier HR and IPS-HR are what make
+  that visible.
 - **User-anchored RL at w=0.5 was a null result — for a principled reason.**
   ΔGAP held flat (+0.188 → +0.191) and HR@10 slipped. Because user-anchoring
   correctly declines to tax the majority of already-popular-taste users, its
@@ -273,6 +279,8 @@ Every metric in the project, where it is computed, and what it tells you.
 |---|---|---|
 | HR@1 / HR@10 | `sid_eval` (constrained beam over full catalog), `eval` (letter log-probs over 10 candidates) | target in top-1 / top-K |
 | NDCG@5 / NDCG@10 | same | 1/log2(rank+2) if target ranked, else 0 |
+| `hr_ips@K` / `ndcg_ips@K` | `sid_eval` | inverse-propensity weighted (w = 1/max(count,1)^γ, self-normalized, `--ips-gamma`); tail hits count more. SFT: **0.6%** vs raw 7.7% — a 13× collapse, i.e. accuracy is almost entirely popularity-farmed |
+| `hr_by_tier` (head/mid/tail) | `sid_eval` | HR@10 split by target popularity tier. SFT: **head 10.8% / mid 0% / tail 0%** (n = 212/73/15) — the model gets *zero* non-head targets |
 | free-gen validity | `sid_eval` | unconstrained greedy generation emits a real catalog ID |
 | eval loss / token accuracy | SFT logs | per-token quality on held-out answers |
 
@@ -295,8 +303,7 @@ Every metric in the project, where it is computed, and what it tells you.
 | hacking gap | computed from logs + checkpoint evals | proxy–true divergence | Δ(training reward) − Δ(held-out HR@10) per phase; measured: +0.12 reward vs −1.0pp HR@10 on vanilla GRPO |
 
 **Bias / shortcut — planned** (documented in the refinement table below):
-IPS-corrected HR/NDCG · per-tier HR
-(head/mid/tail) · feedback-loop
+feedback-loop
 amplification curve · reward–cue correlation · primacy–recency asymmetry ·
 framing gap (paired neutral/evaluative eval) · history reversal gap ·
 permutation flip rate · representation probes R1–R6 (linear probing, CKA
@@ -474,8 +481,8 @@ Bias*, *SPLIT*, *Mitigating Propensity Bias*, *ReCRec*, *Echoes in the Loop*,
 | Refinement | Definition | Replaces / augments | Source idea | Status |
 |---|---|---|---|---|
 | **User-anchored popularity lift (ΔGAP)** | pop(top-1 retrieval) − mean pop(that user's own history), averaged over users | catalog-mean `pop_lift` — ΔGAP separates "model over-popularizes" from "this user genuinely likes popular items"; a per-user justified baseline instead of one global +0.27 | [*LLMs as Recommender Systems: A Study of Popularity Bias*](https://arxiv.org/abs/2406.01285) (GAP metrics) | ✅ `delta_gap` in `sid_eval` + user-anchored RL reward (`--pop-anchor user`); SFT **+0.19** vs pop_lift@1 +0.48 |
-| **IPS-corrected HR@K / NDCG@K** | weight each test hit by inverse propensity ∝ 1/pop(target)^γ (self-normalized) | raw HR/NDCG, which reward popular-guessing because test targets are themselves popular (0.77 mean quantile) — IPS makes tail hits count more, so the metric can't be farmed by popularity | [*Mitigating Propensity Bias of LLMs for RecSys*](https://arxiv.org/abs/2409.20052); [*ReCRec*](https://doi.org/10.1145/3672275) | ➕ easy add to `sid_eval` |
-| **Per-tier HR (head/mid/tail)** | HR@10 computed separately for targets in top/mid/bottom popularity tiers | single aggregate HR — a model can score 7.7% overall with literally 0% on tail targets; the tier split exposes it | [cold-start bias paper](https://arxiv.org/abs/2508.20401) (segment-wise evaluation) | ➕ easy add to `sid_eval` |
+| **IPS-corrected HR@K / NDCG@K** | weight each test hit by inverse propensity ∝ 1/pop(target)^γ (self-normalized) | raw HR/NDCG, which reward popular-guessing because test targets are themselves popular (0.77 mean quantile) — IPS makes tail hits count more, so the metric can't be farmed by popularity | [*Mitigating Propensity Bias of LLMs for RecSys*](https://arxiv.org/abs/2409.20052); [*ReCRec*](https://doi.org/10.1145/3672275) | ✅ `hr_ips@K`/`ndcg_ips@K` in `sid_eval`; SFT **0.6%** vs raw 7.7% (13× collapse) |
+| **Per-tier HR (head/mid/tail)** | HR@10 computed separately for targets in top/mid/bottom popularity tiers | single aggregate HR — a model can score 7.7% overall with literally 0% on tail targets; the tier split exposes it | [cold-start bias paper](https://arxiv.org/abs/2508.20401) (segment-wise evaluation) | ✅ `hr_by_tier` in `sid_eval`; SFT **head 10.8% / mid 0% / tail 0%** — literally confirms the failure mode |
 | **Exposure Gini + aggregate diversity** | Gini coefficient of item exposure counts across all users' top-K, plus % of catalog ever retrieved | long-tail coverage@10 alone — Gini captures *concentration* among the items that do get exposed | [*Modeling and Counteracting Exposure Bias*](https://arxiv.org/abs/2001.04832); [*Feedback Loop and Bias Amplification*](https://arxiv.org/abs/2007.13019) | ✅ `exposure_gini` + `coverage@K` in `sid_eval`; SFT Gini **0.97**, coverage **7.4%** |
 | **Feedback-loop amplification curve** | simulate T loop iterations (append top-1 retrieval to history, re-retrieve); plot pop_lift / Gini vs T | all static metrics — bias that looks mild in one shot can compound in the loop; LLM rec loops shown to collapse diversity | [*Echoes in the Loop*](https://arxiv.org/abs/2602.07442); [*Feedback Loop and Bias Amplification*](https://arxiv.org/abs/2007.13019) | ➕ planned (new script, no retraining) |
 | **Hacking gap** | Δ(training reward) − Δ(held-out HR@10), per checkpoint segment | eyeballing reward vs HR curves — makes "reward up, utility flat" a single reportable number per training phase | [*Correlated Proxies*](https://arxiv.org/abs/2403.03185) (hacking = proxy–true divergence); [ODIN](https://arxiv.org/abs/2402.07319) | ✅ **measured**: vanilla GRPO reward +0.12 while HR@10 −1.0pp (positive gap = proxy narrowing); v1 pop run reward flat while validity −36pp (gap via new shortcut) |
