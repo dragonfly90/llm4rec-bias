@@ -1,26 +1,49 @@
 """Full-catalog evaluation for the semantic-ID route.
 
 Constrained beam search over the trie of all valid semantic IDs gives a
-top-K item ranking against the entire catalog (~1.4K items) -> HR@K, NDCG@K.
-Also reports unconstrained top-1 validity (does free generation produce a
-real ID?) and several popularity/exposure bias metrics:
+top-K item ranking against the entire catalog (~1.7K items). We report standard
+accuracy plus a battery of popularity/exposure bias metrics; each is designed
+to reveal something the aggregate HR@K hides. Every "SFT:" value below is the
+measured SFT-checkpoint reading on 300 test users, kept here as a sanity anchor.
 
-  pop_lift@1   q(top-1) - catalog mean (global baseline)
-  delta_gap    q(top-1) - the user's own history-popularity mean, averaged
-               over users (ΔGAP; per-user baseline). Needs the hist_pop_mean
-               dataset column.  https://arxiv.org/abs/2406.01285
-  exposure_gini  Gini of item exposure counts across all users' top-K, over
-                 the whole catalog incl. never-retrieved items (0 = uniform
-                 exposure, 1 = all exposure on one item).
-                 https://arxiv.org/abs/2001.04832  https://arxiv.org/abs/2007.13019
-  coverage@K   fraction of the catalog that appears in at least one top-K.
-  hr_ips@K,    HR/NDCG re-weighted by inverse target propensity
-  ndcg_ips@K   (w = 1/max(count,1)^gamma, self-normalized) so tail hits count
-               more — a popularity-farming policy can't inflate them.
-               https://arxiv.org/abs/2409.20052  https://doi.org/10.1145/3672275
-  hr_by_tier   HR@K split by the target's popularity tier (head/mid/tail =
-               top/mid/bottom third of the quantile range).
-               https://arxiv.org/abs/2508.20401
+Accuracy
+  hr@1, hr@K    target in the top-1 / top-K beam. Catalog is ~1.7K, so
+                chance HR@10 ≈ 0.6%.                                  SFT: 1.3% / 7.7%
+  ndcg@K        1/log2(rank+2) if the target ranks in top-K, else 0. SFT: 0.039
+  free-gen      unconstrained greedy decode emits a real catalog ID — measures
+                whether the ID grammar was actually learned, not just enforced
+                by the beam constraint.                              SFT: 94%
+
+Popularity (all use the item popularity quantile q ∈ [0,1]; 0.5 = catalog median)
+  pop_lift@1    q(top-1) − catalog mean (≈0.5). Global "how popular are the
+                recommendations" signal. +0.5 = only blockbusters, 0 = neutral.
+                Confound: real next-watches are popular too, so a positive value
+                is partly justified — that's why ΔGAP exists.        SFT: +0.48
+  delta_gap     q(top-1) − THIS user's own history-popularity mean, averaged
+                over users (ΔGAP). Per-user baseline strips out "the user simply
+                likes popular items", leaving the genuinely unjustified excess.
+                Needs the hist_pop_mean dataset column.              SFT: +0.19
+                https://arxiv.org/abs/2406.01285
+
+Exposure / diversity (over ALL users' top-K pooled together)
+  exposure_gini Gini of per-item exposure counts across the whole catalog,
+                zeros included (0 = every item shown equally, 1 = all exposure
+                on one item). Catches concentration that pop_lift/ΔGAP miss —
+                "same few blockbusters for everyone".                SFT: 0.97
+                https://arxiv.org/abs/2001.04832 https://arxiv.org/abs/2007.13019
+  coverage@K    fraction of the catalog that appears in ≥1 user's top-K.
+                The blunt long-tail-reach number.                    SFT: 7.4%
+
+Accuracy-under-debiasing (do the hits survive when you stop rewarding popularity?)
+  hr_ips@K,     HR/NDCG re-weighted by inverse target propensity
+  ndcg_ips@K    (w = 1/max(count,1)^gamma, self-normalized), so a hit on a rare
+                target counts far more than a hit on a blockbuster. A big gap
+                below raw HR = accuracy is popularity-farmed.        SFT: 0.6% (vs 7.7%)
+                https://arxiv.org/abs/2409.20052 https://doi.org/10.1145/3672275
+  hr_by_tier    HR@K computed separately for targets in the top/mid/bottom third
+                of the popularity range (head/mid/tail). Exposes tail collapse an
+                aggregate HR averages away.        SFT: head 10.8% / mid 0% / tail 0%
+                https://arxiv.org/abs/2508.20401
 """
 
 import argparse
