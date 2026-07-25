@@ -247,6 +247,19 @@ Two findings, one of them a reframe of the whole popularity story:
   ΔGAP reduction needs a proportionally higher weight (~2–3×) or dropping
   wrong-only. (Gini/coverage did not improve as a side effect either, since
   ΔGAP itself did not move.)
+- **Rare-hit bonus was inert — tail collapse is a capacity floor, not a reward
+  problem.** `make_rare_hit_bonus` (+1/count^0.5 for a correct retrieval, the
+  reward-side mirror of IPS-HR) was designed to lift mid/tail HR. But its
+  telemetry `bonus/rare_hit_mean` stayed ~0.000 for all 300 steps: the policy
+  essentially never retrieves a rare item correctly during rollouts, so the
+  22x-weighted bonus had nothing to reinforce — *you can't reward what never
+  happens in the rollouts*. Eval confirmed no tail movement (SFT vs rare-hit:
+  hr_by_tier head 10.8%/9.0%, mid 0%/0%, tail 0%/0%; hr_ips@10 0.6%/0.4%). The
+  lesson generalizes: a **dense** penalty on a frequent event (the popularity
+  tax fires every rollout) can bite, but a **sparse** bonus on a rare event the
+  model can't produce cannot. Fixing tail collapse at this scale needs a
+  data-side or capacity-side fix (tail-oversampled SFT, larger backbone,
+  curriculum), not a cleverer RL reward.
 
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
