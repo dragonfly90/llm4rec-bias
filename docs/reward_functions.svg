@@ -1,0 +1,62 @@
+<svg width="680" height="414" viewBox="0 0 680 414" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Reward functions in llm4rec-bias</title>
+<desc>Two main rewards (prefix credit, MiniOneRec hybrid) and two add-on rewards (popularity penalty, rare-hit bonus), each with its value for exact-hit, wrong, and invalid outcomes, plus the weighted-sum composition.</desc>
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.t{font-size:14px;fill:#1f2328}
+.th{font-size:14px;font-weight:500;fill:#1f2328}
+.ts{font-size:12px;fill:#59636e}
+.box{fill:#ffffff;stroke:#d1d9e0;stroke-width:1}
+.blue{fill:#ddf4ff;stroke:#54aeff;stroke-width:1}
+.amber{fill:#fff8c5;stroke:#d4a72c;stroke-width:1}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
+</style>
+<rect x="0" y="0" width="680" height="414" fill="#ffffff"/>
+
+<text class="ts" x="40" y="22">Main rewards — exactly one active (--reward)</text>
+
+<rect class="blue" x="40" y="32" width="196" height="62" rx="8"/>
+<text class="th mono" x="56" y="58">make_sid_reward</text>
+<text class="ts" x="56" y="76">prefix credit · default</text>
+<rect class="box" x="252" y="43" width="120" height="40" rx="6"/>
+<text class="ts" x="264" y="58">exact hit</text><text class="th" x="264" y="76">+1.0</text>
+<rect class="box" x="386" y="43" width="120" height="40" rx="6"/>
+<text class="ts" x="398" y="58">wrong, valid</text><text class="th" x="398" y="76">+0.1·depth</text>
+<rect class="box" x="520" y="43" width="120" height="40" rx="6"/>
+<text class="ts" x="532" y="58">invalid</text><text class="th" x="532" y="76">−0.5</text>
+
+<rect class="blue" x="40" y="104" width="196" height="62" rx="8"/>
+<text class="th mono" x="56" y="130">make_minionerec_reward</text>
+<text class="ts" x="56" y="148">hybrid rule + rank</text>
+<rect class="box" x="252" y="115" width="120" height="40" rx="6"/>
+<text class="ts" x="264" y="130">exact hit</text><text class="th" x="264" y="148">+1.0</text>
+<rect class="box" x="386" y="115" width="120" height="40" rx="6"/>
+<text class="ts" x="398" y="130">wrong, valid</text><text class="th" x="398" y="148">−m(i)/Σm</text>
+<rect class="box" x="520" y="115" width="120" height="40" rx="6"/>
+<text class="ts" x="532" y="130">invalid</text><text class="th" x="532" y="148">−1.5</text>
+
+<text class="ts" x="40" y="186">Add-on rewards — summed with reward_weights</text>
+
+<rect class="amber" x="40" y="196" width="196" height="62" rx="8"/>
+<text class="th mono" x="56" y="222">make_pop_penalty</text>
+<text class="ts" x="56" y="240">popularity tax · w_pop</text>
+<rect class="box" x="252" y="207" width="120" height="40" rx="6"/>
+<text class="ts" x="264" y="222">above baseline</text><text class="th" x="264" y="240">−(q − b)</text>
+<rect class="box" x="386" y="207" width="120" height="40" rx="6"/>
+<text class="ts" x="398" y="222">at or below</text><text class="th" x="398" y="240">0</text>
+<rect class="box" x="520" y="207" width="120" height="40" rx="6"/>
+<text class="ts" x="532" y="222">invalid</text><text class="th" x="532" y="240">0</text>
+
+<rect class="amber" x="40" y="268" width="196" height="62" rx="8"/>
+<text class="th mono" x="56" y="294">make_rare_hit_bonus</text>
+<text class="ts" x="56" y="312">propensity hit · w_rare</text>
+<rect class="box" x="252" y="279" width="120" height="40" rx="6"/>
+<text class="ts" x="264" y="294">correct hit</text><text class="th" x="264" y="312">+1/√c</text>
+<rect class="box" x="386" y="279" width="120" height="40" rx="6"/>
+<text class="ts" x="398" y="294">wrong</text><text class="th" x="398" y="312">0</text>
+<rect class="box" x="520" y="279" width="120" height="40" rx="6"/>
+<text class="ts" x="532" y="294">invalid</text><text class="th" x="532" y="312">0</text>
+
+<rect class="box" x="40" y="350" width="600" height="44" rx="8"/>
+<text class="th" x="340" y="377" text-anchor="middle">R_total  =  R_main  +  w_pop · P  +  w_rare · B</text>
+</svg>

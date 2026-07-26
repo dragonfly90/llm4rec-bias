@@ -688,6 +688,8 @@ already 10%).
 
 ### Reward equations and code
 
+![Reward functions: two main rewards (prefix credit, MiniOneRec hybrid) and two add-on rewards (popularity penalty, rare-hit bonus), with their values for exact-hit, wrong, and invalid outcomes, and the weighted-sum composition](docs/reward_functions.svg)
+
 Four reward functions in [`sid_reward.py`](src/llm4rec/sid_reward.py), in two
 roles: **main** (the task objective — exactly one active, via `--reward`) and
 **add-on** (bias tuning — composed on top through trl's weighted
