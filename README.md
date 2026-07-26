@@ -260,6 +260,18 @@ Two findings, one of them a reframe of the whole popularity story:
   model can't produce cannot. Fixing tail collapse at this scale needs a
   data-side or capacity-side fix (tail-oversampled SFT, larger backbone,
   curriculum), not a cleverer RL reward.
+- **Reproducibility: SFT is stable, GRPO's HR@10 is not.** A clean end-to-end
+  re-run (fresh SFT → GRPO, same data/SIDs) reproduced the SFT bias profile
+  within noise — HR@10 7.7% (identical), ΔGAP +0.185 vs +0.188, pop_lift +0.480
+  vs +0.483, Gini 0.975 vs 0.972, coverage 7.6% vs 7.4%, per-tier head 10.8% /
+  mid 0% / tail 0% (identical). The GRPO stage reproduced the *qualitative*
+  story (HR slips, tail stays 0%, popularity frozen) but with more HR@10 spread
+  run-to-run (4.3% here vs 6.3–7.7% in earlier runs). Cause: the reward is
+  sparse (most rollout groups get identical rewards, so `frac_reward_zero_std`
+  is high and little gradient flows) and MPS sampling is unseeded across the
+  generation loop — so the RL stage is genuinely noisier than SFT. Report GRPO
+  HR@10 as a range, not a point; the bias conclusions (no tail fix, popularity
+  unmoved) hold across every run.
 
 **What `pop_lift@1` means.** Every movie gets a popularity quantile in [0,1]
 (ranked by training interaction count: 0 = least-watched, 1 = most-watched,
