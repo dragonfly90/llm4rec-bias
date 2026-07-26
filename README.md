@@ -686,6 +686,107 @@ the policy collapses to low-entropy conservative output. The letter route
 (`reward.py`) is the degenerate version: +1 / 0 / −0.5, no shaping (chance is
 already 10%).
 
+### Reward equations and code
+
+Four reward functions in [`sid_reward.py`](src/llm4rec/sid_reward.py), in two
+roles: **main** (the task objective — exactly one active, via `--reward`) and
+**add-on** (bias tuning — composed on top through trl's weighted
+`reward_funcs` list). Notation: rollout item $i_k$ (parsed from completion $k$;
+`None` if unparseable), target $t_k$, popularity quantile $q(i)$, training
+interaction count $c(i)$, user history baseline $\bar q_{H_u}$
+(`hist_pop_mean`), code levels $\ell$.
+
+**1. `make_sid_reward` — prefix credit** (main, default)
+
+$$R(i_k)=\begin{cases}
+1.0 & i_k = t_k\\
+\alpha \cdot \mathrm{depth}(i_k,t_k) & i_k \ne t_k,\ \alpha = 0.1\ \text{(\texttt{--prefix-credit})}\\
+-0.5 & i_k = \varnothing \ \text{(invalid)}
+\end{cases}$$
+
+where $\mathrm{depth}$ = matching leading code levels (≤ 3 → shaping caps at
+0.3, safely under the exact reward). Shaping gives gradient when exact hits are
+rare, but is itself a shortcut — `shortcut/prefix_depth` tracks neighborhood
+farming; disable with `--prefix-credit 0`.
+
+**2. `make_minionerec_reward` — hybrid rule + rank-aware** (main)
+([arXiv:2510.24431](https://arxiv.org/abs/2510.24431))
+
+$$R(i_k)=\begin{cases}
+1.0 & i_k = t_k\\
+-\dfrac{m(i_k)}{\sum_{j \in W} m(j)},\quad m(i)=\dfrac{1}{\log(\rho_i+1)} & i_k \in W \ \text{(wrong, valid)}\\
+-1.5 & i_k = \varnothing
+\end{cases}$$
+
+$W$ = distinct wrong items in the GRPO group; $\rho_i$ = that item's rank by
+**frequency within the group** (our sampled-rollout stand-in for the paper's
+constrained-beam rank), so the most *confidently* wrong item is punished
+hardest and the group's penalties sum to −1. Invalid is −1.5, not −0.5, so it
+stays strictly dominated by every valid outcome (see the escape-hatch finding).
+
+**3. `make_pop_penalty` — popularity tax** (add-on, `--pop-weight`)
+
+$$P(i_k) = -\max\big(q(i_k) - b_k,\ 0\big),\qquad
+b_k=\begin{cases}
+\bar q_\mathcal{C} \approx 0.5 & \texttt{--pop-anchor catalog}\\
+\bar q_{H_{u_k}} & \texttt{--pop-anchor user}\ \text{(ΔGAP-aligned)}
+\end{cases}$$
+
+with $P(i_k)=0$ when invalid, or when `--pop-wrong-only` and $i_k=t_k$. The
+`user` anchor is a direct gradient on ΔGAP: taxing a blockbuster costs ~0 for a
+blockbuster-lover but a lot for a niche user
+([arXiv:2406.01285](https://arxiv.org/abs/2406.01285)).
+
+**4. `make_rare_hit_bonus` — propensity-weighted hit** (add-on, `--rare-hit-weight`)
+
+$$B(i_k) = \mathbf{1}[i_k = t_k]\cdot \frac{1}{\max(c(i_k),1)^{\gamma}},
+\qquad \gamma = 0.5\ \text{(\texttt{--rare-hit-gamma})}$$
+
+The reward-side mirror of `hr_ips@K`: a correct rare hit (count 1) earns ~22×
+a correct blockbuster hit (count 490). **Measured inert** — see the null result
+above ([arXiv:2409.20052](https://arxiv.org/abs/2409.20052)).
+
+**Composition.** trl sums the active functions with `reward_weights`:
+
+$$R_{\text{total}}(i_k) = R_{\text{main}}(i_k) \;+\; w_{\text{pop}} P(i_k) \;+\; w_{\text{rare}} B(i_k)$$
+
+then GRPO normalizes within each group of `num_generations` rollouts to get
+advantages. Wiring in [`sid_grpo.py`](src/llm4rec/sid_grpo.py):
+
+```python
+main = (make_minionerec_reward(sid_table, item_meta, num_generations=G)
+        if args.reward == "minionerec"
+        else make_sid_reward(sid_table, item_meta, prefix_credit=args.prefix_credit))
+reward_funcs, reward_weights = [main], [1.0]
+if args.pop_weight > 0:                       # popularity tax
+    reward_funcs.append(make_pop_penalty(sid_table, item_meta,
+                                         anchor=args.pop_anchor,        # catalog | user
+                                         wrong_only=args.pop_wrong_only))
+    reward_weights.append(args.pop_weight)
+if args.rare_hit_weight > 0:                  # propensity-weighted hit bonus
+    reward_funcs.append(make_rare_hit_bonus(sid_table, item_meta,
+                                            gamma=args.rare_hit_gamma))
+    reward_weights.append(args.rare_hit_weight)
+
+GRPOTrainer(model=model, reward_funcs=reward_funcs,
+            args=GRPOConfig(reward_weights=reward_weights, beta=args.beta, ...), ...)
+```
+
+Every function logs its own telemetry via `log_metric`
+(`shortcut/{invalid_rate,pop_lift,prefix_depth}`, `penalty/pop_mean`,
+`bonus/rare_hit_mean`, `reward/rank_penalty_mean`), so each component gets its
+own per-step curve alongside `reward` and `kl`.
+
+**Which run used which:**
+
+| run | main | add-on |
+|---|---|---|
+| `sid_grpo` | prefix | — |
+| `sid_grpo_rerun` | minionerec | — |
+| `sid_grpo_pop`, `_pop_v2`, `_pop_w1` | minionerec | pop penalty (catalog), w = 0.5 / 0.5 / 1.0 |
+| `sid_grpo_ugap` | minionerec | pop penalty (user, wrong-only), w = 0.5 |
+| `sid_grpo_rarehit` | minionerec | rare-hit bonus, w = 1.0 |
+
 **MiniOneRec reward + popularity tuning.** `sid_reward.py` also implements
 the MiniOneRec hybrid reward ([arXiv:2510.24431](https://arxiv.org/html/2510.24431v1))
 and a popularity penalty, selected from the `sid_grpo` CLI:
