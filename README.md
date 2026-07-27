@@ -183,13 +183,29 @@ the invalidity door sealed, the policy chose to **pay the popularity tax
 rather than diversify** — popular guesses still earn enough exact-hit reward
 to be worth −0.5 × lift. Eval side confirms it — the four-run ladder:
 
-| metric | SFT | GRPO (prefix) | +pop v1 (open hatch) | +pop v2 (w=0.5) | +pop w=1.0 |
-|---|---|---|---|---|---|
-| HR@1 | 1.3% | **1.7%** | 0.3% | 1.0% | **1.7%** |
-| HR@10 | **7.7%** | 6.7% | 6.7% | 6.7% | 7.3% |
-| NDCG@10 | 0.039 | 0.036 | 0.029 | 0.033 | 0.038 |
-| pop_lift@1 | +0.48 | +0.48 | +0.42 | +0.48 | **+0.46** |
-| free-gen validity | 94% | 100% | 64% | 100% | 100% |
+All checkpoints, 300 test users, full-catalog constrained-beam retrieval over
+1,682 items. **HR@10** = *hit rate at 10*: the fraction of users whose actual
+next movie appears anywhere in the model's top-10 list (chance ≈ 0.6%); HR@1
+is the same for the single top pick. Blank cells = metric added after that run;
+`—` = not applicable.
+
+| run | reward config | HR@1 | HR@10 | NDCG@10 | pop_lift@1 | ΔGAP | Gini | cov@10 | valid |
+|---|---|---|---|---|---|---|---|---|---|
+| **SFT** | — (baseline) | 1.3% | **7.7%** | 0.039 | +0.483 | +0.188 | 0.972 | 7.4% | 94% |
+| SFT rerun | — (reproduce) | 0.7% | **7.7%** | 0.034 | +0.480 | +0.185 | 0.975 | 7.6% | 98% |
+| GRPO | prefix | **1.7%** | 6.7% | 0.036 | +0.481 | | | | 100% |
+| GRPO rerun | minionerec | 0.0% | 4.3% | 0.021 | +0.470 | +0.176 | 0.983 | 5.6% | 98% |
+| +pop v1 | minionerec + pop w=0.5, invalid −0.5 | 0.3% | 6.7% | 0.029 | +0.423 | | | | 64% |
+| +pop v2 | minionerec + pop w=0.5 | 1.0% | 6.7% | 0.033 | +0.479 | | | | 100% |
+| **+pop w=1.0** | minionerec + pop w=1.0 | **1.7%** | 7.3% | 0.038 | **+0.458** | | | | 100% |
+| +ΔGAP | minionerec + pop user w=0.5, wrong-only | 1.3% | 6.3% | 0.034 | +0.486 | +0.191 | 0.979 | 6.0% | 100% |
+| +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
+
+Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
+carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
+the only genuine reduction — but its 0.012 margin over the next-lowest run sits
+inside the GRPO stage's own run-to-run spread (0.470–0.487), so treat it as
+suggestive, not established.
 
 Sweep reading:
 - **w=0.5 repriced but did not reroute** — greedy-decode popularity identical
