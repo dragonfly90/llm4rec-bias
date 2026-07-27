@@ -197,7 +197,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | GRPO rerun | minionerec | 0.0% | 4.3% | 0.021 | +0.470 | +0.176 | 0.983 | 5.6% | 98% |
 | +pop v1 | minionerec + pop w=0.5, invalid −0.5 | 0.3% | 6.7% | 0.029 | +0.423 | | | | 64% |
 | +pop v2 | minionerec + pop w=0.5 | 1.0% | 6.7% | 0.033 | +0.479 | | | | 100% |
-| **+pop w=1.0** | minionerec + pop w=1.0 | **1.7%** | 7.3% | 0.038 | **+0.458** | | | | 100% |
+| **+pop w=1.0** | minionerec + pop w=1.0 | **1.7%** | 7.3% | 0.038 | **+0.458** | **+0.163** | 0.974 | 6.5% | 100% |
 | +ΔGAP | minionerec + pop user w=0.5, wrong-only | 1.3% | 6.3% | 0.034 | +0.486 | +0.191 | 0.979 | 6.0% | 100% |
 | +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
 
@@ -205,7 +205,55 @@ Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
 the only genuine reduction — but its 0.012 margin over the next-lowest run sits
 inside the GRPO stage's own run-to-run spread (0.470–0.487), so treat it as
-suggestive, not established.
+suggestive, not established. (Backfilled after this table was written, the same
+run also posts the project's lowest **ΔGAP, +0.163** — see the head-to-head
+below.)
+
+### Head-to-head: the three reward configurations
+
+`make_minionerec_reward` alone vs. each add-on stacked on it, all at 300 test
+users. Arrows mark the desirable direction.
+
+| metric | want | SFT (no RL) | `minionerec` | `+ make_pop_penalty` (w=1.0) | `+ make_rare_hit_bonus` (w=1.0) |
+|---|---|---|---|---|---|
+| HR@1 | ↑ | 1.3% | 0.0% | **1.7%** | 1.0% |
+| HR@10 | ↑ | **7.7%** | 4.3% | 7.3% | 6.3% |
+| NDCG@10 | ↑ | **0.039** | 0.021 | 0.038 | 0.032 |
+| hr_ips@10 | ↑ | 0.58% | 0.37% | **0.67%** | 0.44% |
+| HR@10 head tier | ↑ | **10.8%** | 6.1% | 10.4% | 9.0% |
+| HR@10 mid / tail | ↑ | 0% / 0% | 0% / 0% | 0% / 0% | 0% / 0% |
+| pop_lift@1 | ↓ | +0.483 | +0.470 | **+0.458** | +0.487 |
+| ΔGAP | ↓ | +0.188 | +0.176 | **+0.163** | +0.193 |
+| exposure Gini | ↓ | **0.972** | 0.983 | 0.974 | 0.980 |
+| coverage@10 | ↑ | **7.4%** | 5.6% | 6.5% | 5.7% |
+| free-gen validity | ↑ | 94% | 98% | **100%** | **100%** |
+
+**`make_pop_penalty` is the only add-on that earns its place.** It wins or ties
+on 8 of 11 rows: best accuracy of any RL config (HR@1 1.7%, HR@10 7.3%,
+NDCG 0.038), best debiased accuracy (`hr_ips@10` 0.67% — the *only* config
+above the SFT baseline), and the lowest popularity readings anywhere in the
+project (pop_lift +0.458, **ΔGAP +0.163**, a 13% cut from SFT's +0.188). It
+also nearly repairs the exposure damage the other RL runs cause (Gini 0.974 vs
+0.983, coverage 6.5% vs 5.6%). Bias down *and* accuracy up, relative to
+`minionerec` alone.
+
+**`make_rare_hit_bonus` costs without paying.** Every bias metric is *worse*
+than plain `minionerec` (ΔGAP +0.193 vs +0.176, pop_lift +0.487 vs +0.470) and
+the tail it targets is still exactly 0%. The reward never fired
+(`bonus/rare_hit_mean` mean 0.0004, max 0.0024 over 300 steps), so the run is
+plain `minionerec` plus noise.
+
+**Caveat on the `minionerec` column.** It comes from a single run that happened
+to land at the bottom of the GRPO spread (HR@10 4.3%; other runs of comparable
+configs reach 6.3–7.3%). Some of the apparent gap between it and the add-on
+columns is stage variance, not reward design. The *bias* ordering
+(pop-penalty < minionerec < rare-hit on ΔGAP) is the more trustworthy signal,
+since popularity metrics were stable across reruns (±0.003) while HR@10 was
+not.
+
+**Nothing fixes the tail.** All four columns show mid = tail = 0%. No reward
+configuration moved a single non-head target — consistent with the capacity
+floor documented below.
 
 Sweep reading:
 - **w=0.5 repriced but did not reroute** — greedy-decode popularity identical
