@@ -753,7 +753,33 @@ above ([arXiv:2409.20052](https://arxiv.org/abs/2409.20052)).
 $$R_{\text{total}}(i_k) = R_{\text{main}}(i_k) \;+\; w_{\text{pop}} P(i_k) \;+\; w_{\text{rare}} B(i_k)$$
 
 then GRPO normalizes within each group of `num_generations` rollouts to get
-advantages. Wiring in [`sid_grpo.py`](src/llm4rec/sid_grpo.py):
+advantages.
+
+**Worked example** — `R_main` = `make_minionerec_reward`, both add-ons at
+weight 1.0. A **niche user** (history popularity 0.25) whose true next movie is
+*Mad Love (1995)* (count 1, q = 0.00); the policy samples two rollouts, one
+guessing *Star Wars* (count 490, q = 1.00):
+
+| rollout | R_main | w_pop·P | w_rare·B | **R_total** |
+|---|---|---|---|---|
+| *Star Wars* — wrong | −1.00 | −0.75 | 0.00 | **−1.75** |
+| *Mad Love* — correct | +1.00 | −0.00 | +1.00 | **+2.00** |
+
+- **R_main** separates right from wrong (+1 / −1) — the MiniOneRec rank penalty
+  punishing a confidently wrong answer.
+- **P** hits only the *Star Wars* guess (−0.75): far more popular than this
+  user's taste (q 1.00 vs baseline 0.25). The correct obscure pick is untaxed.
+- **B** rewards the correct pick (+1.00) because the target is rare — a rare
+  correct hit is worth ~22× a blockbuster correct hit.
+
+All three terms stack the same way, widening the gap from 2.0 (main alone) to
+3.75. **Only the gaps matter**: GRPO standardizes rewards within each group, so
+a constant added to every rollout changes nothing — which is why the *weights*
+are what tune behavior. Measured: `w_pop = 0.5` left P too small against the ±1
+main reward and got absorbed ("repriced but did not reroute"); `w_pop = 1.0`
+was the first weight to shift choices.
+
+Wiring in [`sid_grpo.py`](src/llm4rec/sid_grpo.py):
 
 ```python
 main = (make_minionerec_reward(sid_table, item_meta, num_generations=G)
