@@ -879,6 +879,56 @@ own per-step curve alongside `reward` and `kl`.
 | `sid_grpo_ugap` | minionerec | pop penalty (user, wrong-only), w = 0.5 |
 | `sid_grpo_rarehit` | minionerec | rare-hit bonus, w = 1.0 |
 
+### Proposed: dense reward (designed, not yet run)
+
+Diagnosed from the runs above, not measured — no checkpoint exists for this
+yet. It combines the three fixes the telemetry pointed at with the one add-on
+that measurably worked.
+
+Notation: rollout item $i_k$ ($\varnothing$ if unparseable), group size $G$;
+$\mathcal{T}_u=\\{t^{(1)},\dots,t^{(M)}\\}$ the user's next $M$ held-out items
+in order; $e(\cdot)$ the frozen MiniLM embedding already computed in
+`semid.py`; $q(i)$ popularity quantile; $b_u$ the user's history-popularity
+mean.
+
+$$
+R(i_k)=
+\begin{cases}
+\gamma^{\,m-1} & i_k = t^{(m)} \in \mathcal{T}_u \quad \text{(graded hit)}\\
+\lambda \cdot \big[\cos\big(e(i_k),\,e(t^{(1)})\big)\big]_+ & i_k \ \text{valid},\ i_k \notin \mathcal{T}_u \quad \text{(dense similarity)}\\
+-\beta_{\mathrm{inv}} & i_k = \varnothing \quad \text{(invalid)}
+\end{cases}
+$$
+
+$$R_{\mathrm{total}}(i_k) = R(i_k) - w\cdot\big[q(i_k)-b_u\big]_+$$
+
+with $\gamma=0.7$, $M=3$, $\lambda=0.3$, $\beta_{\mathrm{inv}}=1.5$, $w=1.0$.
+
+| term | replaces | measured problem it fixes |
+|---|---|---|
+| $\gamma^{m-1}$ graded hit | binary 1-of-1,682 | the target is so sparse every added signal starves; accepting the next 3 items roughly triples the hit rate the reward can see |
+| $\lambda[\cos]_+$ | $0.1\times$ prefix depth **and** the rank penalty | prefix depth is 0 for nearly every rollout (chance 0.025); and the rank penalty orders wrong items by **arbitrary tie-break** — measured 12/12 groups had all-distinct wrong items at `num_generations=4`, so `Counter.most_common()` fell back to insertion order. Cosine is continuous, meaningful, and always fires |
+| $-w[q-b_u]_+$ | — | the only add-on that worked: at $w=1.0$ it gave the project's lowest pop_lift (+0.458) and ΔGAP (+0.163) at no accuracy cost |
+| $-\beta_{\mathrm{inv}}$ | $-0.5$ | −0.5 let the policy hide in invalid output once penalties stacked (invalid rate 0.40 → 0.70) |
+
+Constraints the constants must satisfy:
+1. $\lambda\cdot\max\cos < \min_m \gamma^{m-1}$, i.e. $0.3 < \gamma^2 = 0.49$ —
+   shaping must never outrank the weakest true positive.
+2. $-\beta_{\mathrm{inv}}$ strictly below every valid outcome (the escape-hatch rule).
+3. $w \ge 1.0$ — measured: 0.5 gets absorbed.
+
+**Scale-free variant.** GRPO standardizes within each group anyway, so the
+magnitudes are half-fiction. Replacing values by their within-group rank keeps
+the ordering while removing all sensitivity to $\lambda$, $w$, $\beta_{\mathrm{inv}}$:
+
+$$\tilde R(i_k) = \frac{2\cdot\mathrm{rank}_G\big(R_{\mathrm{total}}(i_k)\big)}{G-1} - 1 \in [-1,1]$$
+
+Expected: better HR@10 / NDCG / `hr_ips` (the gradient becomes informative
+instead of half-random) while holding the $w=1.0$ popularity gains. It will
+**not** fix the tail — that is the capacity floor, and no reward reaches it.
+Requires a `future_items` column in `sid_data.py` and the item embedding matrix
+cached next to `semantic_ids.json`.
+
 **MiniOneRec reward + popularity tuning.** `sid_reward.py` also implements
 the MiniOneRec hybrid reward ([arXiv:2510.24431](https://arxiv.org/html/2510.24431v1))
 and a popularity penalty, selected from the `sid_grpo` CLI:
