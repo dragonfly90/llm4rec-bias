@@ -282,21 +282,40 @@ reward can only reweight actions the policy actually samples. With Gini 0.97
 the policy draws from ~100 of 1,682 items, so rare items essentially never
 appear in rollouts and the rare-hit bonus had nothing to fire on
 (`bonus/rare_hit_mean` = 0.0004). That is a **sampling** failure, not a reward
-failure. Raising temperature (or top-p / an entropy bonus) puts tail items into
-the rollout distribution, at which point the *unmodified* bonus can start
-paying out. The documented null should be read as conditional on T = 0.9.
+failure. Formally, temperature reshapes the sampling distribution
 
-**3. `num_generations` = 4** — makes advantage estimates noisy, and is what
-made the rank penalty degenerate: measured **12/12 groups had all-distinct
+$$\pi_T(i) \;\propto\; \exp\!\big(\log \pi(i)\,/\,T\big)$$
+
+and the chance a given item is seen *at all* in a group of $G$ rollouts is
+
+$$\Pr[\,i \text{ sampled at least once}\,] \;=\; 1-\big(1-\pi_T(i)\big)^{G}$$
+
+For a tail item at $\pi_T(i)\!\sim\!10^{-4}$ with $G=4$ that is $\approx 4\times10^{-4}$
+— essentially never, which is exactly the regime `bonus/rare_hit_mean` = 0.0004
+reports. Raising $T$ flattens $\pi_T$ and raising $G$ multiplies the draws, and
+both enter the expression above; the *unmodified* bonus can then start paying
+out. The documented null should be read as conditional on T = 0.9, G = 4.
+
+**3. `num_generations` = 4** — GRPO's advantage is a group-relative z-score,
+
+$$A_k \;=\; \frac{R_k - \mu_G}{\sigma_G + \epsilon},
+\qquad \mu_G=\frac{1}{G}\sum_{j} R_j,\quad \sigma_G=\mathrm{std}_j(R_j)$$
+
+so the baseline $\mu_G$ is estimated from $G$ samples and its standard error
+falls as $1/\sqrt{G}$ — at $G=4$ that baseline is very noisy, and the same
+small $G$ is what made the rank penalty degenerate: measured **12/12 groups had all-distinct
 wrong items**, so `Counter.most_common()` fell back to insertion order and the
 penalty ranked by arbitrary tie-break. G = 8–16 fixes both (the paper uses
 beam-16).
 
 **Is there a ceiling on improvement?** Not for *reducing* bias: ΔGAP has room
 to fall from +0.188 toward 0 (recommending at each user's own taste level). By
-contrast, *amplifying* it is nearly capped — the SFT model already recommends
-at quantile 0.983, leaving only **+0.017** of headroom to the theoretical max
-ΔGAP of +0.205. Nothing structural blocks improvement; the open question is
+contrast, *amplifying* it is nearly capped, since $q \le 1$ bounds it by
+
+$$\Delta\mathrm{GAP} \;\le\; 1 - \frac{1}{N}\sum_u b_u \;=\; 1 - 0.795 \;=\; +0.205$$
+
+and the SFT model already recommends at mean quantile 0.983, leaving only
+**+0.017** of headroom to that maximum. Nothing structural blocks improvement; the open question is
 whether the optimizer is given permission (β) and material (temperature, G) to
 move.
 
