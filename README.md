@@ -255,6 +255,57 @@ not.
 configuration moved a single non-head target — consistent with the capacity
 floor documented below.
 
+### The knobs we never turned (and why KL is probably the binding constraint)
+
+Every run in this repo used the CLI defaults for the three parameters that
+decide whether a reward can act at all: **β = 0.04, temperature = 0.9,
+`num_generations` = 4**. All nine runs varied only the reward. That is a real
+gap in the experiment design, and it may explain the weak results above better
+than any reward-shape argument.
+
+**1. KL strength (`--beta`) — the biggest untried lever.** The bias lives in
+the *SFT prior*: SFT alone gives pop_lift +0.483 and ΔGAP +0.188 before RL
+touches anything. The GRPO objective is
+
+$$\mathcal{L} = -\mathbb{E}\big[A \cdot \log \pi\big] \;+\; \beta\, D_{\mathrm{KL}}\big(\pi \,\|\, \pi_{\mathrm{SFT}}\big)$$
+
+so every popularity penalty we added was fighting a regularizer whose explicit
+job is to hold the policy where the bias already is. "Repriced but did not
+reroute" is exactly what a binding KL constraint looks like — no reward-design
+flaw required. A sweep over β ∈ {0.005, 0.02, 0.04, 0.1} separates *"the
+reward is too weak"* from *"KL won't let it move."* The experiment plan above
+lists the KL sweep as the **generic mitigation baseline**; we never ran it, so
+every mechanism-guided result here is currently uncontrolled against it.
+
+**2. Sampling temperature — this likely explains the `rare_hit_bonus` null.** A
+reward can only reweight actions the policy actually samples. With Gini 0.97
+the policy draws from ~100 of 1,682 items, so rare items essentially never
+appear in rollouts and the rare-hit bonus had nothing to fire on
+(`bonus/rare_hit_mean` = 0.0004). That is a **sampling** failure, not a reward
+failure. Raising temperature (or top-p / an entropy bonus) puts tail items into
+the rollout distribution, at which point the *unmodified* bonus can start
+paying out. The documented null should be read as conditional on T = 0.9.
+
+**3. `num_generations` = 4** — makes advantage estimates noisy, and is what
+made the rank penalty degenerate: measured **12/12 groups had all-distinct
+wrong items**, so `Counter.most_common()` fell back to insertion order and the
+penalty ranked by arbitrary tie-break. G = 8–16 fixes both (the paper uses
+beam-16).
+
+**Is there a ceiling on improvement?** Not for *reducing* bias: ΔGAP has room
+to fall from +0.188 toward 0 (recommending at each user's own taste level). By
+contrast, *amplifying* it is nearly capped — the SFT model already recommends
+at quantile 0.983, leaving only **+0.017** of headroom to the theoretical max
+ΔGAP of +0.205. Nothing structural blocks improvement; the open question is
+whether the optimizer is given permission (β) and material (temperature, G) to
+move.
+
+**Recommended order:** β sweep first (cheapest, highest information, and it
+tests the binding-constraint hypothesis directly) → temperature ≥ 1.2 paired
+with the existing rare-hit bonus (tests whether that null was a sampling
+artifact) → G = 8. Only then invest in a reward redesign: if β is the binding
+constraint, a better reward shape will not help either.
+
 Sweep reading:
 - **w=0.5 repriced but did not reroute** — greedy-decode popularity identical
   to baseline (+0.479); the policy absorbed the tax and kept the
