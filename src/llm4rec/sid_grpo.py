@@ -48,6 +48,9 @@ def main():
                          "(+1/count^gamma when correct; 0 = off) — targets tail/IPS HR")
     ap.add_argument("--rare-hit-gamma", type=float, default=0.5,
                     help="propensity exponent for the rare-hit bonus")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="RNG seed; vary it to measure run-to-run variance "
+                         "(trl's default is 42, so all runs collide without this)")
     args = ap.parse_args()
 
     ds = load_dataset("json", data_files=args.train)["train"]
@@ -91,6 +94,7 @@ def main():
         beta=args.beta,
         learning_rate=args.lr,
         reward_weights=reward_weights,
+        seed=args.seed,
         logging_steps=5,
         save_steps=100,
         bf16=True,
