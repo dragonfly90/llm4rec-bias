@@ -51,21 +51,35 @@ def main():
     ap.add_argument("--seed", type=int, default=42,
                     help="RNG seed; vary it to measure run-to-run variance "
                          "(trl's default is 42, so all runs collide without this)")
+    ap.add_argument("--lora-r", type=int, default=16,
+                    help="LoRA rank for the RL adapter; widens how much the "
+                         "reward can express (r=16 trains ~1.8%% of params)")
+    ap.add_argument("--lora-alpha", type=int, default=0,
+                    help="LoRA alpha; 0 = use 2*r (the usual convention)")
+    ap.add_argument("--train-sid-tokens", action="store_true",
+                    help="also train the 196 semantic-ID embedding rows during RL "
+                         "(frozen by default, so RL can re-compose but not "
+                         "re-represent items)")
     args = ap.parse_args()
 
     ds = load_dataset("json", data_files=args.train)["train"]
     ds = ds.remove_columns([c for c in ("answer",) if c in ds.column_names])
 
     table = SidTable(args.sid_table)
-    tok, model, _ = prepare(args.model, table)
+    tok, model, new_ids = prepare(args.model, table)
     model = PeftModel.from_pretrained(model, args.sft_adapter)
     model = model.merge_and_unload()
     print(f"merged SFT adapter {args.sft_adapter}")
 
+    extra = {"trainable_token_indices": {"embed_tokens": new_ids}} if args.train_sid_tokens else {}
     peft_cfg = LoraConfig(
-        r=16, lora_alpha=32, lora_dropout=0.0, task_type="CAUSAL_LM",
+        r=args.lora_r, lora_alpha=args.lora_alpha or 2 * args.lora_r,
+        lora_dropout=0.0, task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        **extra,
     )
+    print(f"LoRA r={args.lora_r} alpha={args.lora_alpha or 2 * args.lora_r} "
+          f"sid_tokens_trainable={args.train_sid_tokens}")
     if args.reward == "minionerec":
         main_reward = make_minionerec_reward(args.sid_table, args.item_meta,
                                              num_generations=args.num_generations)
