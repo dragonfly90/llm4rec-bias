@@ -13,8 +13,9 @@ from trl import GRPOConfig, GRPOTrainer
 
 from .semid import SidTable
 from .sid_model import prepare
-from .sid_reward import (make_minionerec_reward, make_pop_penalty,
-                         make_rare_hit_bonus, make_sid_reward)
+from .sid_reward import (PolicyScorer, make_minionerec_reward, make_pop_penalty,
+                         make_rare_hit_bonus, make_sda_reward, make_sid_reward)
+from .sid_transition import Transition
 
 
 def main():
@@ -32,9 +33,22 @@ def main():
     ap.add_argument("--beta", type=float, default=0.04)
     ap.add_argument("--temperature", type=float, default=0.9)
     ap.add_argument("--prefix-credit", type=float, default=0.1)
-    ap.add_argument("--reward", choices=["prefix", "minionerec"], default="prefix",
+    ap.add_argument("--reward", choices=["prefix", "minionerec", "sda"], default="prefix",
                     help="prefix: exact + prefix-credit shaping; "
-                         "minionerec: binary rule + rank-aware hard-negative penalty")
+                         "minionerec: binary rule + rank-aware hard-negative penalty; "
+                         "sda: semantic distribution alignment, log P*/Q_theta")
+    ap.add_argument("--transition", default="runs/transition/transition.pt",
+                    help="[sda] trained next-step transition model T_phi "
+                         "(python -m llm4rec.sid_transition)")
+    ap.add_argument("--sda-clip", type=float, default=4.0,
+                    help="[sda] symmetric clip on the log importance ratio; the "
+                         "invalid penalty sits one unit below it")
+    ap.add_argument("--sda-invalid", type=float, default=None,
+                    help="[sda] invalid-completion reward (default -(clip+1), "
+                         "which keeps invalid strictly dominated)")
+    ap.add_argument("--sda-hit-weight", type=float, default=0.0,
+                    help="[sda] optional exact-hit bonus added on top of the "
+                         "alignment reward (0 = pure distribution alignment)")
     ap.add_argument("--pop-weight", type=float, default=0.0,
                     help="weight of the popularity penalty added as a second "
                          "reward function (0 = off)")
@@ -80,7 +94,18 @@ def main():
     )
     print(f"LoRA r={args.lora_r} alpha={args.lora_alpha or 2 * args.lora_r} "
           f"sid_tokens_trainable={args.train_sid_tokens}")
-    if args.reward == "minionerec":
+    scorer = None
+    if args.reward == "sda":
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        transition = Transition(args.transition, args.sid_table, device)
+        scorer = PolicyScorer(tok, table, device)
+        main_reward = make_sda_reward(args.sid_table, args.item_meta, transition,
+                                      scorer, clip=args.sda_clip,
+                                      invalid_penalty=args.sda_invalid,
+                                      hit_weight=args.sda_hit_weight)
+        print(f"SDA reward: T_phi={args.transition} clip={args.sda_clip} "
+              f"hit_weight={args.sda_hit_weight}")
+    elif args.reward == "minionerec":
         main_reward = make_minionerec_reward(args.sid_table, args.item_meta,
                                              num_generations=args.num_generations)
     else:
@@ -122,6 +147,10 @@ def main():
         processing_class=tok,
         peft_config=peft_cfg,
     )
+    if scorer is not None:
+        # Q_theta must be the *live* policy, so bind the scorer to the PEFT
+        # model the trainer just built (not the merged base we handed it).
+        scorer.set_model(trainer.model)
     trainer.train()
     trainer.save_model(args.out + "/final")
     tok.save_pretrained(args.out + "/final")

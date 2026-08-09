@@ -824,10 +824,12 @@ already 10%).
 
 ![Reward functions: two main rewards (prefix credit, MiniOneRec hybrid) and two add-on rewards (popularity penalty, rare-hit bonus), with their values for exact-hit, wrong, and invalid outcomes, and the weighted-sum composition](docs/reward_functions.svg)
 
-Four reward functions in [`sid_reward.py`](src/llm4rec/sid_reward.py), in two
+Five reward functions in [`sid_reward.py`](src/llm4rec/sid_reward.py), in two
 roles: **main** (the task objective — exactly one active, via `--reward`) and
 **add-on** (bias tuning — composed on top through trl's weighted
-`reward_funcs` list). Notation: rollout item $i_k$ (parsed from completion $k$;
+`reward_funcs` list). The diagram covers the four heuristic ones; the fifth,
+**SDA**, is derived from a loss rather than composed, and is written up
+separately below. Notation: rollout item $i_k$ (parsed from completion $k$;
 `None` if unparseable), target $t_k$, popularity quantile $q(i)$, training
 interaction count $c(i)$, user history baseline $\bar q_{H_u}$
 (`hist_pop_mean`), code levels $\ell$.
@@ -948,6 +950,104 @@ own per-step curve alongside `reward` and `kl`.
 | `sid_grpo_pop`, `_pop_v2`, `_pop_w1` | minionerec | pop penalty (catalog), w = 0.5 / 0.5 / 1.0 |
 | `sid_grpo_ugap` | minionerec | pop penalty (user, wrong-only), w = 0.5 |
 | `sid_grpo_rarehit` | minionerec | rare-hit bonus, w = 1.0 |
+
+### 5. Semantic Distribution Alignment (SDA)
+
+Implements the design in
+[llm4rec-bias-Integrated issue #2](https://github.com/Beater-221E/llm4rec-bias-Integrated/issues/2).
+Every reward above is a *heuristic composition*: pick terms, pick weights, watch
+what the policy does to them. SDA is the opposite move — define a **target
+distribution** over the next semantic ID, take the KL to the policy as the loss,
+and let the reward fall out of it. No per-level weights, no tax coefficients.
+
+**Target.** A small transition model $T_\phi$
+([`sid_transition.py`](src/llm4rec/sid_transition.py)) reads the user's SID
+preference state $P_t$ (per-level code histograms of the history) plus the
+history itself, and emits the next-step distribution factored exactly the way
+the LLM factors it:
+
+$$P^{*}(C_1,C_2,C_3) = P^{*}(C_1)\,P^{*}(C_2\mid C_1)\,P^{*}(C_3\mid C_1,C_2)$$
+
+**Loss.** Aligning the policy's joint SID distribution to it, with the KL chain
+rule splitting the error by SID granularity for free:
+
+$$\mathcal{L}_{\mathrm{SDA}} = D_{\mathrm{KL}}\big(P^{*}\,\|\,Q_\theta\big)
+= \underbrace{D_1}_{\text{coarse}} + \underbrace{D_{2\mid 1}}_{\text{mid}} + \underbrace{D_{3\mid 12}}_{\text{fine}}$$
+
+**Reward.** Treating $P^{*}$ as fixed, $-\nabla_\theta \mathcal{L}_{\mathrm{SDA}}
+= \mathbb{E}_{s\sim Q_\theta}\big[R_{\mathrm{SDA}}(s)\,\nabla_\theta \log Q_\theta(s)\big]$
+with the importance ratio
+
+$$R_{\mathrm{SDA}}(s) = \frac{P^{*}(s)}{Q_\theta(s \mid H_t)}$$
+
+so an under-produced SID pays $>1$ and an over-produced one $<1$. **This is the
+only reward in the repo that never reads `target_item`** — the supervision is a
+distribution, not the single held-out answer. That is the bias-resistance claim:
+the policy is pulled toward the user's whole next-step semantic neighborhood
+rather than toward one popular point, and the same mechanism prices *over*-recommendation
+(the concentration pathology that Gini 0.97 exposes) without a hand-set tax.
+
+**Implementation choices** (and where they depart from the spec):
+
+| choice | why |
+|---|---|
+| reward is $\mathrm{clip}(\log P^{*} - \log Q_\theta,\ \pm c)$, $c=4$ | GRPO standardizes rewards within each group, so only ordering and spread survive — and the raw ratio's variance is the spec's own listed limitation. Measured: $\log$-ratio std ≈ 1.1, `sda/frac_clipped` = 0, so the clip only guards the tail |
+| invalid $= -(c+1) = -5$ | bounded valid rewards are what make invalid **strictly dominated** — the escape-hatch rule this repo paid for once already |
+| $Q_\theta$ by teacher-forced scoring of the item's *canonical* SID tokens under the live PEFT policy | trl hands reward functions text only, never logprobs. Scoring canonical tokens makes $Q$ an item-level distribution directly comparable with $P^{*}$, and immune to junk around the ID. Costs one extra 16-row forward pass: step time 11 s, unchanged |
+| $P^{*}$ smoothed as $(1-\epsilon)P_\phi + \epsilon/\lvert\mathcal{I}\rvert$, $\epsilon=0.05$ | the KL needs full support; it also floors $\log P^{*}$ so the reward can't explode on an item $T_\phi$ thinks impossible. Uniform, **not** popularity — mixing toward a popularity prior would inject the bias SDA exists to resist |
+| $P_t$ as per-level *marginal* histograms + pooled code embeddings | the spec's full prefix histograms are 64, 64², 64³ wide; the pooled embeddings carry the joint information the marginals drop |
+| the collision level gets $P^{*}(\text{item}) = P^{*}(c_1,c_2,c_3)/\lvert\text{group}\rvert$ | this repo's 4th code breaks ID collisions and carries no semantics |
+| $T_\phi$ trained only on $s[:-2]$ | the val/test targets are never a training label, so the RL reward cannot leak the held-out answer |
+
+**Is $T_\phi$ a good enough teacher?** It has to beat two baselines: uniform (or
+it carries no information) and popularity (or SDA is just a bias amplifier in
+disguise). Measured on the 938 val users:
+
+| | val joint NLL | HR@1 | HR@10 |
+|---|---|---|---|
+| uniform | 7.43 | 0.06% | 0.6% |
+| popularity prior | **6.79** | | 4.5% |
+| **$T_\phi$** | 7.23 | 1.6% | **9.4%** |
+
+$T_\phi$ ranks more than 2× better than popularity, and better than the SFT LLM
+itself (7.7% HR@10 on test) — the teacher is stronger than the student at
+ranking, which is what makes alignment worth doing. It is *worse* than the
+popularity prior as a raw density, which is the expected shape: a marginal is
+easy to calibrate, a conditional is not. Model selection is on val NLL, not val
+HR, precisely because SDA consumes the log-probabilities and not just the order.
+
+**The teacher's own bias is the ceiling.** SDA pulls the policy toward $P^{*}$,
+so whatever bias $P^{*}$ carries is the fixed point — no amount of alignment
+goes past it. Scoring $P^{*}$ *as if it were the recommender* (938 test users,
+`sid_transition --eval-only --val data/sid_test.jsonl`):
+
+| | HR@1 | HR@10 | pop_lift@1 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|
+| SFT policy (300 users) | 1.3% | 7.7% | +0.483 | +0.188 | 0.972 | 7.4% |
+| **$P^{*}$ (the SDA target)** | **2.2%** | **8.8%** | +0.466 | +0.163 | 0.973 | **10.9%** |
+
+The spec lists "$P_t$ itself may contain popularity bias" as a limitation; this
+is that limitation measured. $P^{*}$ is only *mildly* less popularity-leaning
+than the SFT policy (ΔGAP +0.163 vs +0.188 — coincidentally the same value the
+`+pop w=1.0` run reached) and just as concentrated (Gini 0.973). So SDA is
+predicted to be an **accuracy** intervention with a modest bias side-effect, not
+a bias fix: the headroom is HR@1 1.3% → 2.2%, while ΔGAP can only reach ~+0.16.
+Reaching further requires debiasing $P^{*}$ itself, or stacking the (orthogonal)
+popularity penalty on top — `--reward sda --pop-weight 1.0`.
+
+```bash
+# 1. train the target distribution (~1 min, CPU/MPS)
+uv run python -m llm4rec.sid_transition --out runs/transition
+
+# 2. GRPO against it
+uv run python -m llm4rec.sid_grpo --reward sda --sft-adapter runs/sid_sft/final \
+    --steps 300 --out runs/sid_grpo_sda
+```
+
+Telemetry: `sda/log_ratio_{mean,std}`, `sda/logp_mean`, `sda/logq_mean`,
+`sda/frac_clipped`, `sda/D1` (the exact coarse-grained KL of spec §10), and
+`sda/gap_l{1,2,3}` (per-level chain-rule mismatch at the sampled codes) —
+so the coarse→fine decomposition is a per-step curve, not just an equation.
 
 ### Proposed: dense reward (designed, not yet run)
 
@@ -1182,6 +1282,7 @@ src/llm4rec/
   sid_data.py   history -> next-sid dataset + item_meta.json
   sid_sft.py    stage 1: LoRA + trainable sid token rows
   sid_reward.py exact/prefix-credit/invalid reward + telemetry
+  sid_transition.py  T_phi: next-step SID distribution P* (the SDA target)
   sid_grpo.py   stage 2: GRPO on merged SFT weights
   sid_eval.py   constrained beam search: HR@K/NDCG@K over full catalog
 ```
