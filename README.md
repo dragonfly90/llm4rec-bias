@@ -132,8 +132,15 @@ uv run python -m llm4rec.sid_data --out data          # sid_{train,val,test}.jso
 uv run python -m llm4rec.sid_sft  --out runs/sid_sft  # stage 1 (~40 min on M3)
 uv run python -m llm4rec.sid_eval --adapter runs/sid_sft/final --max-examples 300 --out runs/eval_sid_sft.json
 uv run python -m llm4rec.sid_grpo --sft-adapter runs/sid_sft/final --steps 300 --out runs/sid_grpo
-uv run python -m llm4rec.sid_eval --adapter runs/sid_grpo/final --max-examples 300 --out runs/eval_sid_grpo.json
+uv run python -m llm4rec.sid_eval --sft-adapter runs/sid_sft/final --adapter runs/sid_grpo/final --max-examples 300 --out runs/eval_sid_grpo.json
+
+# optional: the SDA target distribution, if training with --reward sda (~1 min)
+uv run python -m llm4rec.sid_transition --out runs/transition
 ```
+
+Note the eval of a GRPO checkpoint needs `--sft-adapter` as well: GRPO adapters
+are trained on *merged* SFT weights, so the same merge has to happen before the
+RL adapter is applied.
 
 **Results — SFT vs GRPO** (300 test users, full-catalog retrieval over 1,682
 items; chance HR@10 = 0.6%. GRPO: 300 steps, prefix-credit reward, β=0.04):
@@ -458,6 +465,9 @@ Every metric in the project, where it is computed, and what it tells you.
 | `shortcut/invalid_rate` | GRPO logs, per step | format | fraction of rollouts that parse to no valid ID (the metric that exposed both RL bugs) |
 | `shortcut/prefix_depth` | GRPO logs, per step | semantic prior | matching leading code levels between generation and target (chance = 0.025); rising depth with stalling hits = prefix-credit farming |
 | `penalty/pop_mean`, `reward/rank_penalty_mean` | GRPO logs | — | magnitudes of the active reward components |
+| `sda/log_ratio_{mean,std}`, `sda/logp_mean`, `sda/logq_mean` | GRPO logs, per step (`--reward sda`) | — | the alignment reward and its two halves: how far the policy's own probability sits from the target distribution's |
+| `sda/frac_clipped` | GRPO logs, per step | — | fraction of rollouts hitting the log-ratio clip. Non-zero = the clip is shaping the reward, not just guarding the tail |
+| `sda/D1`, `sda/gap_l{1,2,3}` | GRPO logs, per step | semantic prior | the spec's coarse→fine decomposition: `D1` is the exact KL(P*(C₁) ‖ Q(C₁)); `gap_l` is the per-level chain-rule mismatch at the sampled codes. Says *which SID granularity* the misalignment lives at |
 | `kl`, `reward`, `frac_reward_zero_std` | GRPO logs | — | policy drift from reference; training reward; fraction of zero-gradient groups (pinned at 1.0 = no learning) |
 | hacking gap | computed from logs + checkpoint evals | proxy–true divergence | Δ(training reward) − Δ(held-out HR@10) per phase; measured: +0.12 reward vs −1.0pp HR@10 on vanilla GRPO |
 
@@ -950,6 +960,8 @@ own per-step curve alongside `reward` and `kl`.
 | `sid_grpo_pop`, `_pop_v2`, `_pop_w1` | minionerec | pop penalty (catalog), w = 0.5 / 0.5 / 1.0 |
 | `sid_grpo_ugap` | minionerec | pop penalty (user, wrong-only), w = 0.5 |
 | `sid_grpo_rarehit` | minionerec | rare-hit bonus, w = 1.0 |
+| `sid_grpo_sda` | sda | — |
+| `sid_grpo_sda_pop` | sda | pop penalty (catalog), w = 1.0 |
 
 ### 5. Semantic Distribution Alignment (SDA)
 
@@ -1044,10 +1056,32 @@ uv run python -m llm4rec.sid_grpo --reward sda --sft-adapter runs/sid_sft/final 
     --steps 300 --out runs/sid_grpo_sda
 ```
 
+**What is actually trained** — three different objects, only one of them a LoRA
+adapter, which is worth stating because "the SDA model" could mean any of them:
+
+| object | parameterization | trained when |
+|---|---|---|
+| the policy $\pi_\theta$ | **LoRA** r=16, α=32, on `q,k,v,o,gate,up,down` over merged SFT weights (~1.8% of the 0.5B backbone) | every GRPO run, SDA included — identical to the earlier GRPO runs, so the reward stays the only variable |
+| $T_\phi$, the target $P^{*}$ | **not LoRA, not an LLM**: a standalone 279K-parameter MLP (per-level code embeddings → encoder → three softmax heads), trained from scratch | once, offline, before RL — 1 min, and re-trainable without touching the policy |
+| the 196 sid embedding rows | peft `trainable_token_indices` | SFT only; **frozen** during RL unless `--train-sid-tokens`, so RL can re-compose items but not re-represent them |
+
+$Q_\theta$ is read off the *live* PEFT policy (adapter active), not the frozen
+merged base — otherwise the ratio $P^{*}/Q_\theta$ would go stale the moment
+training started.
+
 Telemetry: `sda/log_ratio_{mean,std}`, `sda/logp_mean`, `sda/logq_mean`,
 `sda/frac_clipped`, `sda/D1` (the exact coarse-grained KL of spec §10), and
 `sda/gap_l{1,2,3}` (per-level chain-rule mismatch at the sampled codes) —
 so the coarse→fine decomposition is a per-step curve, not just an equation.
+
+**Results: running, not yet measured.** Two arms at the repo's standard GRPO
+settings (β=0.04, T=0.9, G=4, 300 steps, seed 42), so the reward is the only
+thing that differs from the nine checkpoints in the table above:
+`sid_grpo_sda` (pure alignment) and `sid_grpo_sda_pop` (`--pop-weight 1.0`,
+stacking the one add-on that measurably reduced bias — orthogonal to $P^{*}$,
+so unlike the alignment term it is not capped by the teacher's own profile).
+Nothing here should be read as a measured result until this paragraph is
+replaced by an eval table.
 
 ### Proposed: dense reward (designed, not yet run)
 
