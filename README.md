@@ -207,6 +207,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | **+pop w=1.0** | minionerec + pop w=1.0 | **1.7%** | 7.3% | 0.038 | **+0.458** | **+0.163** | 0.974 | 6.5% | 100% |
 | +ΔGAP | minionerec + pop user w=0.5, wrong-only | 1.3% | 6.3% | 0.034 | +0.486 | +0.191 | 0.979 | 6.0% | 100% |
 | +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
+| **SDA** | sda (log P*/Q_θ) | **2.0%** | 7.0% | **0.040** | +0.491 | +0.196 | 0.981 | 6.0% | 98% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1074,14 +1075,49 @@ Telemetry: `sda/log_ratio_{mean,std}`, `sda/logp_mean`, `sda/logq_mean`,
 `sda/gap_l{1,2,3}` (per-level chain-rule mismatch at the sampled codes) —
 so the coarse→fine decomposition is a per-step curve, not just an equation.
 
-**Results: running, not yet measured.** Two arms at the repo's standard GRPO
-settings (β=0.04, T=0.9, G=4, 300 steps, seed 42), so the reward is the only
-thing that differs from the nine checkpoints in the table above:
-`sid_grpo_sda` (pure alignment) and `sid_grpo_sda_pop` (`--pop-weight 1.0`,
-stacking the one add-on that measurably reduced bias — orthogonal to $P^{*}$,
-so unlike the alignment term it is not capped by the teacher's own profile).
-Nothing here should be read as a measured result until this paragraph is
-replaced by an eval table.
+**Result: best top-1 accuracy in the project, worst bias.** 300 steps at the
+repo's standard settings (β=0.04, T=0.9, G=4, seed 42), so the reward is the
+only thing that differs from the nine checkpoints above. 300 test users:
+
+| metric | want | SFT | best prior RL (`+pop w=1.0`) | **SDA** |
+|---|---|---|---|---|
+| HR@1 | ↑ | 1.33% | 1.67% | **2.00%** |
+| NDCG@10 | ↑ | 0.0390 | 0.0384 | **0.0396** |
+| HR@10 | ↑ | **7.67%** | 7.33% | 7.00% |
+| hr_ips@10 | ↑ | 0.58% | **0.67%** | 0.49% |
+| pop_lift@1 | ↓ | +0.483 | **+0.458** | +0.491 |
+| ΔGAP | ↓ | +0.188 | **+0.163** | +0.196 |
+| exposure Gini | ↓ | **0.972** | 0.974 | 0.981 |
+| coverage@10 | ↑ | **7.4%** | 6.5% | 6.0% |
+| free-gen validity | ↑ | 94% | **100%** | 98% |
+
+The alignment signal **transfers**: HR@1 2.00% and NDCG@10 0.0396 are the best
+in the project (previous ceiling 1.67% / 0.0390), a +50% relative HR@1 gain over
+SFT. A teacher that ranks better than the student made the student's top pick
+better — which is the one thing no heuristic reward here achieved, since all of
+them draw their signal from the same single held-out label the policy already
+overfits.
+
+**But it moved bias the wrong way, and the ceiling analysis above predicted the
+wrong sign.** Every bias metric is worse than SFT (ΔGAP +0.196, pop_lift +0.491,
+Gini 0.981), and `hr_ips@10` *fell* to 0.49% — the accuracy was bought on head
+items. The prediction was that alignment would drag the policy toward $P^{*}$'s
+slightly cleaner profile (ΔGAP +0.163); instead the policy moved toward
+$P^{*}$'s *ranking* while ending up more concentrated than $P^{*}$ or the SFT
+prior. The teacher's profile is a **ceiling on how good the bias can get, not a
+floor on how bad**: matching a distribution's argmax ordering does not mean
+inheriting its spread, and the KL-constrained policy took the cheapest path to
+the ordering, which runs through the head.
+
+Caveats: single run; HR@10 7.00% sits inside the documented 4.3–7.7% GRPO
+spread, so that dip is not distinguishable from stage noise. The popularity
+metrics are the trustworthy column here (±0.003 across reruns). Tail HR is 0%,
+as with every other reward in this repo — the capacity floor is untouched.
+
+`sid_grpo_sda_pop` (`--pop-weight 1.0`) is the follow-up: the tax is orthogonal
+to $P^{*}$, so unlike the alignment term it is not capped by the teacher's
+profile, and it now has a concrete thing to correct rather than a hypothetical
+one. *(running — no numbers here until it lands)*
 
 ### Proposed: dense reward (designed, not yet run)
 
