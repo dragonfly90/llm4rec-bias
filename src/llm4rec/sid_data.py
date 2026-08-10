@@ -47,6 +47,10 @@ def build_example(user, hist_items, target, titles, table, popq,
         # mean popularity of this user's shown history — the per-user baseline
         # for the user-anchored (ΔGAP) popularity penalty in sid_reward.py
         "hist_pop_mean": float(sum(popq.get(i, 0.5) for i in hist) / len(hist)),
+        # the shown history as item ids (oldest -> newest). Needed by the SDA
+        # reward: the transition model reads the user's SID preference state
+        # P_t off these items to produce the next-step target distribution.
+        "history_items": [int(i) for i in hist],
         "user": user,
     }
 

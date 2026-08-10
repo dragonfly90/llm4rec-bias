@@ -14,6 +14,11 @@ make_minionerec_reward  MiniOneRec hybrid (https://arxiv.org/abs/2510.24431): bi
 make_pop_penalty      popularity tuning: -max(pop_lift, 0) per completion,
                       meant as a second entry in reward_funcs with its own
                       weight (GRPOConfig.reward_weights).
+make_sda_reward       Semantic Distribution Alignment: reward = log P*(i) -
+                      log Q_theta(i), the log of the spec's importance ratio,
+                      where P* comes from the transition model in
+                      sid_transition.py. Not a hand-mixed heuristic — it is the
+                      policy-gradient reward of D_KL(P* || Q_theta).
 
 Telemetry: invalid rate, popularity lift of generated items vs catalog mean,
 mean matched-prefix depth (all logged per step).
@@ -180,6 +185,186 @@ def make_pop_penalty(sid_table_path: str, item_meta_path: str,
         return rewards
 
     return pop_penalty
+
+
+class PolicyScorer:
+    """log Q_theta(item | history) under the *live* GRPO policy.
+
+    The SDA reward needs the policy's own probability for the sampled semantic
+    ID. trl hands reward functions only text, so we score it ourselves: append
+    the item's canonical SID tokens to the prompt and read the teacher-forced
+    log-probabilities off one extra forward pass (batch of 16 short sequences —
+    a few percent on top of a ~12 s GRPO step).
+
+    Scoring the *canonical* tokens rather than the sampled string makes Q an
+    item-level distribution, directly comparable with the item-level P*, and
+    independent of any junk the policy emitted around the ID.
+
+    The model reference is set after GRPOTrainer builds the PEFT policy, so
+    Q_theta always tracks the current parameters (on-policy, as the ratio
+    P*/Q_theta in the spec assumes).
+    """
+
+    def __init__(self, tok, table, device="mps"):
+        self.tok, self.table, self.device = tok, table, device
+        self.model = None
+        self.levels = table.levels
+        self.level1_ids = [tok.convert_tokens_to_ids(f"<s0_{c}>") for c in range(table.K)]
+        self._prompt_cache = {}
+
+    def set_model(self, model):
+        self.model = model
+
+    def _prompt_ids(self, messages):
+        key = messages[-1]["content"]
+        if key not in self._prompt_cache:
+            enc = self.tok.apply_chat_template(messages, add_generation_prompt=True,
+                                               tokenize=True)
+            # transformers 5 returns a BatchEncoding (possibly batched) here,
+            # older versions a bare list of ids
+            ids = enc["input_ids"] if hasattr(enc, "keys") else enc
+            if ids and isinstance(ids[0], (list, tuple)):
+                ids = ids[0]
+            self._prompt_cache[key] = list(ids)
+        return self._prompt_cache[key]
+
+    def __call__(self, prompts, items):
+        """-> (log Q per row, per-level breakdown (B, levels), Q(C1) per row).
+
+        Rows whose item is None are nan / None (the reward prices invalidity on
+        its own).
+        """
+        import torch
+
+        n = len(items)
+        logq = np.full(n, np.nan)
+        levels = np.full((n, self.levels), np.nan)
+        q1 = [None] * n
+        valid = [k for k, it in enumerate(items) if it is not None]
+        if not valid or self.model is None:
+            return logq, levels, q1
+
+        seqs = []
+        for k in valid:
+            sid_ids = [self.tok.convert_tokens_to_ids(f"<s{l}_{c}>")
+                       for l, c in enumerate(self.table.codes[items[k]])]
+            seqs.append(self._prompt_ids(prompts[k]) + sid_ids)
+        width = max(len(s) for s in seqs)
+        pad = self.tok.pad_token_id or 0
+        # left padding keeps the scored SID tokens at fixed offsets from the end
+        input_ids = torch.tensor([[pad] * (width - len(s)) + s for s in seqs],
+                                 device=self.device)
+        attn = torch.tensor([[0] * (width - len(s)) + [1] * len(s) for s in seqs],
+                            device=self.device)
+        L = self.levels
+        with torch.no_grad():
+            # logits_to_keep is not an optimization detail: the full-sequence
+            # logits are batch x ~360 x 152k (~1.7 GB in bf16) and thrash a 16 GB
+            # Mac, dragging GRPO step time from 11 s to 29 s. We need L+1
+            # positions: the generation prompt plus the first L-1 SID tokens.
+            logits = self.model(input_ids=input_ids, attention_mask=attn,
+                                logits_to_keep=L + 1).logits
+            lp = torch.log_softmax(logits[:, -(L + 1):-1, :].float(), dim=-1)
+            tgt = input_ids[:, -L:]
+            per_level = lp.gather(2, tgt.unsqueeze(-1)).squeeze(-1)   # (V, levels)
+            # Q(C1): the level-1 marginal, renormalized over the 64 code tokens
+            first = torch.softmax(logits[:, -(L + 1), :].float(), dim=-1)[:, self.level1_ids]
+            first = first / first.sum(-1, keepdim=True).clamp(min=1e-12)
+        per_level = per_level.cpu().numpy()
+        first = first.cpu().numpy()
+        for j, k in enumerate(valid):
+            levels[k] = per_level[j]
+            logq[k] = per_level[j].sum()
+            q1[k] = first[j]
+        return logq, levels, q1
+
+
+def make_sda_reward(sid_table_path: str, item_meta_path: str, transition,
+                    policy_scorer: PolicyScorer, clip: float = 4.0,
+                    invalid_penalty: float | None = None, hit_weight: float = 0.0):
+    """Semantic Distribution Alignment reward (llm4rec-bias-Integrated issue #2).
+
+        R_SDA(s) = P*(s) / Q_theta(s | H_t)
+
+    is the importance ratio whose policy gradient is exactly -grad of
+    D_KL(P* || Q_theta): rollouts the policy *under*-produces relative to the
+    user's next-step target distribution get R > 1, over-produced ones R < 1. We
+    reward the **log** ratio, clipped to +-clip:
+
+        R(s) = clip(log P*(s) - log Q_theta(s), -clip, +clip)
+
+    Two reasons. (1) GRPO standardizes rewards inside each group, so only the
+    ordering and spread survive anyway — and the raw ratio's variance is the
+    spec's own listed limitation (small Q_theta blows it up). (2) A bounded
+    reward is what lets invalid output stay *strictly dominated*: this repo
+    previously measured a policy escaping into garbage when a penalty stack made
+    wrong-but-valid cost more than unparseable. invalid_penalty therefore
+    defaults to -(clip + 1).
+
+    Unlike every other reward here, this one never looks at target_item: the
+    supervision is a distribution, not the single held-out answer. That is the
+    bias-resistance claim — the policy is pulled toward the user's whole
+    next-step semantic neighborhood instead of toward one popular point. Set
+    hit_weight > 0 for a hybrid that adds back an explicit exact-hit bonus.
+
+    Telemetry: sda/log_ratio_mean, sda/logp_mean, sda/logq_mean,
+    sda/frac_clipped, sda/D1 (exact KL(P*(C1) || Q(C1)), the coarse-grained
+    mismatch of spec section 10), and sda/gap_l{1..} (per-level chain-rule
+    mismatch at the sampled codes).
+    """
+    table = SidTable(sid_table_path)
+    meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
+    catalog_pop_mean = float(np.mean([m["pop_quantile"] for m in meta.values()]))
+    inv = -(clip + 1.0) if invalid_penalty is None else invalid_penalty
+
+    def sda_reward(prompts, completions, target_item=None, history_items=None,
+                   log_metric=None, **kwargs):
+        if history_items is None:
+            raise ValueError("SDA needs the history_items dataset column "
+                             "(regenerate data with the updated sid_data.py)")
+        items = [table.parse(_text(c)) for c in completions]
+        log_p, p_levels = transition.log_p_items(history_items, items, per_level=True)
+        log_q, q_levels, q1 = policy_scorer(prompts, items)
+
+        rewards, clipped, ratios = [], 0, []
+        for k, item in enumerate(items):
+            if item is None or not np.isfinite(log_q[k]):
+                rewards.append(inv)
+                continue
+            ratio = float(log_p[k] - log_q[k])
+            ratios.append(ratio)
+            r = float(np.clip(ratio, -clip, clip))
+            clipped += abs(ratio) > clip
+            if hit_weight and item == target_item[k]:
+                r += hit_weight
+            rewards.append(r)
+
+        if log_metric is not None:
+            if ratios:
+                log_metric("sda/log_ratio_mean", float(np.mean(ratios)))
+                log_metric("sda/log_ratio_std", float(np.std(ratios)))
+                log_metric("sda/frac_clipped", clipped / len(ratios))
+                log_metric("sda/logp_mean", float(np.nanmean(log_p)))
+                log_metric("sda/logq_mean", float(np.nanmean(log_q)))
+                for l in range(p_levels.shape[1] - 1):
+                    gap = p_levels[:, l] - q_levels[:, l]
+                    if np.isfinite(gap).any():
+                        log_metric(f"sda/gap_l{l + 1}", float(np.nanmean(gap)))
+            # D1 = KL(P*(C1) || Q(C1)), computed once per distinct prompt
+            seen, d1 = set(), []
+            for k, q in enumerate(q1):
+                key = tuple(history_items[k])
+                if q is None or key in seen:
+                    continue
+                seen.add(key)
+                p = transition.level1_probs([history_items[k]])[0].cpu().numpy()
+                d1.append(float(np.sum(p * (np.log(p + 1e-12) - np.log(q + 1e-12)))))
+            if d1:
+                log_metric("sda/D1", float(np.mean(d1)))
+        _log_shortcuts(log_metric, items, target_item, table, meta, catalog_pop_mean)
+        return rewards
+
+    return sda_reward
 
 
 def make_rare_hit_bonus(sid_table_path: str, item_meta_path: str, gamma: float = 0.5):
