@@ -280,8 +280,10 @@ class PolicyScorer:
 
 
 def make_sda_reward(sid_table_path: str, item_meta_path: str, transition,
-                    policy_scorer: PolicyScorer, clip: float = 4.0,
-                    invalid_penalty: float | None = None, hit_weight: float = 0.0):
+                    policy_scorer: PolicyScorer, clip: float = 2.0,
+                    invalid_penalty: float | None = None, hit_weight: float = 0.0,
+                    standardize: bool = True, num_generations: int = 4,
+                    invalid_margin: float = 1.0):
     """Semantic Distribution Alignment reward (llm4rec-bias-Integrated issue #2).
 
         R_SDA(s) = P*(s) / Q_theta(s | H_t)
@@ -307,6 +309,23 @@ def make_sda_reward(sid_table_path: str, item_meta_path: str, transition,
     next-step semantic neighborhood instead of toward one popular point. Set
     hit_weight > 0 for a hybrid that adds back an explicit exact-hit bonus.
 
+    **standardize** (default on) z-scores the valid rollouts' log ratios inside
+    each GRPO group and pins invalid at -(clip + invalid_margin). Measured
+    motivation: the first SDA run spent a large share of its reward variance on
+    format rather than alignment (35% of rollouts started invalid, and the
+    cheapest way to be a valid ID is to emit a familiar, popular one — plausibly
+    part of why that run *raised* concentration). GRPO re-standardizes the group
+    afterwards, so this does not change the alignment ordering; what it fixes is
+    the *ratio* between the alignment contrast and the validity contrast, which
+    is otherwise at the mercy of how much a given group's log ratios happen to
+    disagree. Invalid stays strictly dominated either way.
+
+    Bias correction lives in the **target**, not here: pass a Transition built
+    with pop_gamma > 0 and the reward aligns the policy to the propensity-
+    debiased next-step distribution. That keeps one KL objective instead of two
+    fighting terms — measured: bolting `--pop-weight 1.0` onto plain SDA moved
+    ΔGAP by 0.001 and halved the HR@1 gain.
+
     Telemetry: sda/log_ratio_mean, sda/logp_mean, sda/logq_mean,
     sda/frac_clipped, sda/D1 (exact KL(P*(C1) || Q(C1)), the coarse-grained
     mismatch of spec section 10), and sda/gap_l{1..} (per-level chain-rule
@@ -315,7 +334,7 @@ def make_sda_reward(sid_table_path: str, item_meta_path: str, transition,
     table = SidTable(sid_table_path)
     meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
     catalog_pop_mean = float(np.mean([m["pop_quantile"] for m in meta.values()]))
-    inv = -(clip + 1.0) if invalid_penalty is None else invalid_penalty
+    inv = -(clip + invalid_margin) if invalid_penalty is None else invalid_penalty
 
     def sda_reward(prompts, completions, target_item=None, history_items=None,
                    log_metric=None, **kwargs):
@@ -326,15 +345,34 @@ def make_sda_reward(sid_table_path: str, item_meta_path: str, transition,
         log_p, p_levels = transition.log_p_items(history_items, items, per_level=True)
         log_q, q_levels, q1 = policy_scorer(prompts, items)
 
-        rewards, clipped, ratios = [], 0, []
+        n = len(items)
+        raw = np.array([log_p[k] - log_q[k] if items[k] is not None
+                        and np.isfinite(log_q[k]) else np.nan for k in range(n)])
+        ratios = raw[np.isfinite(raw)].tolist()
+
+        shaped = np.full(n, np.nan)
+        if standardize:
+            # z-score within each group of num_generations rollouts of one prompt
+            for g in range(0, n, num_generations):
+                sl = slice(g, min(g + num_generations, n))
+                grp = raw[sl]
+                ok = np.isfinite(grp)
+                if ok.sum() >= 2 and np.std(grp[ok]) > 1e-8:
+                    z = (grp - np.mean(grp[ok])) / np.std(grp[ok])
+                else:
+                    z = np.where(ok, 0.0, np.nan)  # no information in this group
+                shaped[sl] = z
+        else:
+            shaped = raw
+        clipped = int(np.sum(np.abs(shaped[np.isfinite(shaped)]) > clip))
+        shaped = np.clip(shaped, -clip, clip)
+
+        rewards = []
         for k, item in enumerate(items):
-            if item is None or not np.isfinite(log_q[k]):
+            if not np.isfinite(shaped[k]):
                 rewards.append(inv)
                 continue
-            ratio = float(log_p[k] - log_q[k])
-            ratios.append(ratio)
-            r = float(np.clip(ratio, -clip, clip))
-            clipped += abs(ratio) > clip
+            r = float(shaped[k])
             if hit_weight and item == target_item[k]:
                 r += hit_weight
             rewards.append(r)

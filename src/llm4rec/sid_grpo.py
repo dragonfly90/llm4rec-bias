@@ -40,9 +40,19 @@ def main():
     ap.add_argument("--transition", default="runs/transition/transition.pt",
                     help="[sda] trained next-step transition model T_phi "
                          "(python -m llm4rec.sid_transition)")
-    ap.add_argument("--sda-clip", type=float, default=4.0,
-                    help="[sda] symmetric clip on the log importance ratio; the "
-                         "invalid penalty sits one unit below it")
+    ap.add_argument("--sda-clip", type=float, default=2.0,
+                    help="[sda] symmetric clip on the (standardized) log ratio; "
+                         "the invalid penalty sits one unit below it")
+    ap.add_argument("--sda-pop-gamma", type=float, default=0.3,
+                    help="[sda] propensity-debias the TARGET: P~* ∝ P*/count^γ. "
+                         "0 = align to the raw target (measured: inherits and "
+                         "amplifies its popularity bias). Debiasing the target "
+                         "beats taxing the policy, which fights the objective")
+    ap.add_argument("--sda-standardize", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="[sda] z-score the log ratios within each GRPO group so "
+                         "the alignment contrast keeps a fixed size relative to "
+                         "the validity contrast")
     ap.add_argument("--sda-invalid", type=float, default=None,
                     help="[sda] invalid-completion reward (default -(clip+1), "
                          "which keeps invalid strictly dominated)")
@@ -97,13 +107,18 @@ def main():
     scorer = None
     if args.reward == "sda":
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        transition = Transition(args.transition, args.sid_table, device)
+        transition = Transition(args.transition, args.sid_table, device,
+                                pop_gamma=args.sda_pop_gamma,
+                                item_meta_path=args.item_meta)
         scorer = PolicyScorer(tok, table, device)
         main_reward = make_sda_reward(args.sid_table, args.item_meta, transition,
                                       scorer, clip=args.sda_clip,
                                       invalid_penalty=args.sda_invalid,
-                                      hit_weight=args.sda_hit_weight)
+                                      hit_weight=args.sda_hit_weight,
+                                      standardize=args.sda_standardize,
+                                      num_generations=args.num_generations)
         print(f"SDA reward: T_phi={args.transition} clip={args.sda_clip} "
+              f"pop_gamma={args.sda_pop_gamma} standardize={args.sda_standardize} "
               f"hit_weight={args.sda_hit_weight}")
     elif args.reward == "minionerec":
         main_reward = make_minionerec_reward(args.sid_table, args.item_meta,

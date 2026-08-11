@@ -151,7 +151,8 @@ class Transition:
     """
 
     def __init__(self, ckpt: str, sid_table_path: str, device: str = "cpu",
-                 smooth: float | None = None):
+                 smooth: float | None = None, pop_gamma: float = 0.0,
+                 item_meta_path: str | None = None):
         blob = torch.load(ckpt, map_location="cpu", weights_only=False)
         cfg = blob["config"]
         self.model = TransitionModel(
@@ -184,12 +185,55 @@ class Transition:
              for i in self.items], dtype=torch.float32, device=device)
         self.item_pos = {i: k for k, i in enumerate(self.items)}
 
+        # Propensity-debiased target: P~*(i) ∝ P*(i) / count(i)^gamma.
+        # The measured failure of plain SDA was that the policy inherits the
+        # teacher's popularity profile, so the fix belongs in the *target*, not
+        # in a separate penalty fighting the alignment objective. This keeps one
+        # KL objective — the policy is aligned to the next-step distribution the
+        # user would have under uniform exposure — instead of two terms pulling
+        # against each other. Unlike the (inert) rare-hit bonus, this reweights
+        # every valid rollout, not only correct retrievals of rare items.
+        self.pop_gamma = pop_gamma
+        self.log_bias = None
+        if pop_gamma:
+            if item_meta_path is None:
+                raise ValueError("pop_gamma > 0 needs item_meta_path for counts")
+            meta = {int(k): v for k, v in json.load(open(item_meta_path)).items()}
+            counts = np.array([max(meta[i].get("count", 1), 1) for i in self.items],
+                              dtype=np.float64)
+            self.log_bias = -pop_gamma * np.log(counts)
+
     def _mix(self, logp):
         """(1-e)·P_model + e/|catalog|, in log space."""
         if not self.smooth:
             return logp
         floor = math.log(self.smooth / len(self.items))
         return np.logaddexp(math.log1p(-self.smooth) + logp, floor)
+
+    def _debias(self, logp, rows=None):
+        """Apply -gamma·log count and renormalize over the catalog.
+
+        logp is (B, |catalog|) when rows is None, else (B,) with `rows` giving
+        each entry's catalog index; the normalizer needs the full row either
+        way, so callers with single items pass the full matrix separately.
+        """
+        if self.log_bias is None:
+            return logp
+        return logp + (self.log_bias if rows is None else self.log_bias[rows])
+
+    def _log_norm(self, full_logp):
+        """logsumexp of the debiased catalog row — a per-prompt constant.
+
+        GRPO standardizes within a group and every rollout in a group shares the
+        history, so this cancels in the advantage; we subtract it anyway so that
+        log P~* stays a genuine log-probability and the logged telemetry means
+        what it says.
+        """
+        if self.log_bias is None:
+            return np.zeros(len(full_logp))
+        x = full_logp + self.log_bias
+        m = x.max(axis=1, keepdims=True)
+        return (m[:, 0] + np.log(np.exp(x - m).sum(axis=1)))
 
     @torch.no_grad()
     def _encode(self, histories):
@@ -225,6 +269,13 @@ class Transition:
         gsz = self.log_group_size[[self.item_pos[items[b]] for b in valid]]
         levels_out[valid, self.levels] = -gsz.cpu().numpy()
         out[valid] = self._mix((lp - gsz).cpu().numpy())
+        if self.log_bias is not None:
+            # the debiased target needs a catalog-wide normalizer, so score the
+            # whole row (a small-MLP pass over 1682 items — milliseconds)
+            full = self.log_p_all(histories)
+            rows = np.array([self.item_pos[items[b]] for b in valid])
+            out[valid] = (out[valid] + self.log_bias[rows]
+                          - self._log_norm(full)[valid])
         return (out, levels_out) if per_level else out
 
     @torch.no_grad()
@@ -247,6 +298,14 @@ class Transition:
                 lp = lp + F.log_softmax(logits, dim=-1).gather(1, codes[:, l:l + 1]).squeeze(1)
             out.append(self._mix((lp.view(B, n) - self.log_group_size).cpu().numpy()))
         return np.concatenate(out)
+
+    def log_p_target(self, histories: list) -> np.ndarray:
+        """(B, |catalog|) log P~*: the actual alignment target, debiased and
+        renormalized. Identical to log_p_all when pop_gamma = 0."""
+        full = self.log_p_all(histories)
+        if self.log_bias is None:
+            return full
+        return full + self.log_bias - self._log_norm(full)[:, None]
 
 
 # ---------------- evaluation ----------------
@@ -273,7 +332,7 @@ def evaluate(tr: Transition, rows: list, item_counts: dict, item_meta_path: str)
        are that limitation, measured.
     """
     hist = [r["history_items"] for r in rows]
-    logp = tr.log_p_all(hist)
+    logp = tr.log_p_target(hist)
     pos = np.array([tr.item_pos[r["target_item"]] for r in rows])
     tgt_lp = logp[np.arange(len(pos)), pos]
     rank = (logp > tgt_lp[:, None]).sum(1)
