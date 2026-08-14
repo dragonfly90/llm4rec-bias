@@ -208,6 +208,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | +ΔGAP | minionerec + pop user w=0.5, wrong-only | 1.3% | 6.3% | 0.034 | +0.486 | +0.191 | 0.979 | 6.0% | 100% |
 | +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
 | **SDA** | sda (log P*/Q_θ) | **2.0%** | 7.0% | **0.040** | +0.491 | +0.196 | 0.981 | 6.0% | 98% |
+| SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1114,10 +1115,78 @@ spread, so that dip is not distinguishable from stage noise. The popularity
 metrics are the trustworthy column here (±0.003 across reruns). Tail HR is 0%,
 as with every other reward in this repo — the capacity floor is untouched.
 
-`sid_grpo_sda_pop` (`--pop-weight 1.0`) is the follow-up: the tax is orthogonal
-to $P^{*}$, so unlike the alignment term it is not capped by the teacher's
-profile, and it now has a concrete thing to correct rather than a hypothetical
-one. *(running — no numbers here until it lands)*
+### 5b. Redoing it: debias the target, not the policy
+
+**The obvious follow-up failed, informatively.** `--reward sda --pop-weight 1.0`
+bolts the one add-on that previously worked onto the alignment reward. The tax
+is orthogonal to $P^{*}$, so it is not capped by the teacher's profile:
+
+| metric | SFT | SDA | **SDA + pop w=1.0** |
+|---|---|---|---|
+| HR@1 | 1.33% | **2.00%** | 1.00% |
+| HR@10 | **7.67%** | 7.00% | 7.33% |
+| ΔGAP | +0.188 | +0.196 | +0.195 |
+| pop_lift@1 | +0.483 | +0.491 | +0.489 |
+| exposure Gini | **0.972** | 0.981 | 0.980 |
+
+ΔGAP moved by **0.001** while HR@1 lost half its gain. That is "repriced but did
+not reroute" for the third time in this repo, and the mechanism is now clear: a
+heuristic penalty and a distribution-alignment objective are two terms pulling
+in different directions, and under a KL constraint the alignment term wins the
+direction while the tax only costs accuracy. Stacking does not work here.
+
+**So the correction belongs inside the target.** Rather than taxing the policy
+for following $P^{*}$, debias $P^{*}$ itself with an inverse-propensity
+reweighting, renormalized over the catalog:
+
+$$\tilde P^{*}(i) \;=\; \frac{P^{*}(i)\,/\,\mathrm{count}(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j)\,/\,\mathrm{count}(j)^{\gamma}}
+\qquad (\texttt{--sda-pop-gamma}, \ \gamma = 0.3)$$
+
+The policy still optimizes **one** KL — it is simply aimed at the next-step
+distribution the user would have under uniform exposure. Nothing fights
+anything. (The normalizer is a per-prompt constant that GRPO's group baseline
+cancels; it is computed anyway so `sda/logp_mean` stays a real log-probability.)
+
+$\gamma$ is picked from the target, before spending any GPU on RL — the same
+"measure the ceiling first" move, which is cheap because scoring $P^{*}$ needs
+no LLM (300 test users):
+
+| γ | HR@1 | HR@10 | pop_lift@1 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|
+| 0.0 | **2.33%** | **8.00%** | +0.467 | +0.172 | 0.974 | 8.6% |
+| 0.1 | 1.00% | 7.00% | +0.462 | +0.167 | 0.971 | 9.2% |
+| 0.2 | 1.00% | 7.00% | +0.448 | +0.154 | 0.969 | 9.6% |
+| **0.3** | 1.00% | 6.00% | **+0.317** | **+0.023** | **0.968** | **10.2%** |
+| 0.5 | 0.00% | 3.67% | −0.192 | −0.486 | 0.972 | 10.0% |
+
+Two things fall out. **ΔGAP +0.023 at γ=0.3 is near-neutral** — an order of
+magnitude below anything else in this repo (best prior: +0.163) — and the target
+still ranks at HR@10 6.0%, far above chance. But **the teacher's top-1 accuracy
+is carried by popularity**: HR@1 halves at γ=0.1, long before the bias moves.
+That is the repo's own headline finding (accuracy is popularity-farmed, IPS-HR
+13× below raw) reappearing inside the target distribution. γ=0.5 overshoots into
+obscurity — negative lift is not neutrality.
+
+The second change is to the reward's shape rather than its target. Plain SDA
+started with **35% invalid rollouts**, so a large share of the reward variance
+trained *format*, not alignment — and the cheapest way to emit a valid ID is to
+emit a familiar, popular one, which is plausibly part of why that run
+concentrated exposure. The log ratios are now z-scored within each GRPO group
+and clipped at ±2, with invalid pinned at −3 (`--sda-standardize`, default on):
+
+$$\tilde R(i_k) = \mathrm{clip}\!\left(\frac{r_k - \mu_{G,\mathrm{valid}}}{\sigma_{G,\mathrm{valid}}},\ \pm 2\right),
+\qquad r_k = \log \tilde P^{*}(i_k) - \log Q_\theta(i_k)$$
+
+GRPO re-standardizes the group afterwards, so the alignment *ordering* is
+untouched; what this fixes is the **ratio** between the alignment contrast and
+the validity contrast, which was otherwise at the mercy of how much a given
+group's log ratios happened to disagree. Invalid stays strictly dominated.
+
+Reproduce the original reward with `--sda-pop-gamma 0 --no-sda-standardize`.
+
+*(The γ=0.3 + standardized run is training; this section reports the target-side
+sweep and the stacking null, both measured. No policy-side numbers for the
+redesign until its eval lands.)*
 
 ### Proposed: dense reward (designed, not yet run)
 
