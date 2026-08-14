@@ -209,6 +209,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
 | **SDA** | sda (log P*/Q_θ) | **2.0%** | 7.0% | **0.040** | +0.491 | +0.196 | 0.981 | 6.0% | 98% |
 | SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
+| SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1184,9 +1185,55 @@ group's log ratios happened to disagree. Invalid stays strictly dominated.
 
 Reproduce the original reward with `--sda-pop-gamma 0 --no-sda-standardize`.
 
-*(The γ=0.3 + standardized run is training; this section reports the target-side
-sweep and the stacking null, both measured. No policy-side numbers for the
-redesign until its eval lands.)*
+**Result: the redesign is a null — and that null is the most informative
+measurement in this section.** γ=0.3 + standardization, same 300 steps and
+settings:
+
+| metric | want | SFT | SDA | **SDA v2 (γ=0.3, standardized)** |
+|---|---|---|---|---|
+| HR@1 | ↑ | 1.33% | **2.00%** | 1.00% |
+| HR@10 | ↑ | **7.67%** | 7.00% | 7.00% |
+| NDCG@10 | ↑ | 0.0390 | **0.0396** | 0.0356 |
+| hr_ips@10 | ↑ | **0.58%** | 0.49% | 0.50% |
+| pop_lift@1 | ↓ | **+0.483** | +0.491 | +0.486 |
+| ΔGAP | ↓ | **+0.188** | +0.196 | +0.191 |
+| exposure Gini | ↓ | **0.972** | 0.981 | 0.979 |
+| coverage@10 | ↑ | **7.4%** | 6.0% | 6.2% |
+
+Aiming the objective at a **near-unbiased target** (ΔGAP +0.023) moved the
+policy's ΔGAP from +0.196 to +0.191. It also gave back the HR@1 gain. Both
+changes in the redesign — target debiasing and reward standardization — did
+essentially nothing to the retrieval distribution.
+
+**The invariance is the finding.** Across the five configurations now measured,
+the *reward's target* varies enormously while the *policy's behavior* barely
+moves:
+
+| | ΔGAP range | pop_lift range |
+|---|---|---|
+| what the rewards aim at (γ sweep on $\tilde P^{*}$) | +0.023 … +0.172 (**0.149**) | +0.317 … +0.467 (0.150) |
+| what the policies do (SFT, +pop, SDA, SDA+pop, SDA v2) | +0.163 … +0.196 (**0.033**) | +0.458 … +0.491 (0.033) |
+
+A 0.149 swing in the objective buys a 0.005 swing in behavior. That is a far
+sharper test of the repo's **"β is the binding constraint"** hypothesis than the
+β sweep it proposed: we did not merely fail to find a better reward shape, we
+pointed the objective at an almost-unbiased distribution and the KL leash held
+the policy at the SFT prior anyway (final KL 0.049). Under β=0.04, T=0.9, G=4,
+**reward design is not the lever for bias on this setup** — and that conclusion
+now rests on five configurations spanning heuristic penalties, distribution
+alignment, and a debiased alignment target, rather than on one run.
+
+What SDA *did* buy is real and lives on the accuracy side, where the KL
+constraint is not fighting it: HR@1 2.00% and NDCG@10 0.0396, both project
+bests, from the plain γ=0 variant. The bias-resistance claim is unsupported at
+this β.
+
+**Next lever, in order:** β ∈ {0.005, 0.01, 0.02} with the SDA reward held fixed
+(does the policy move at all when the leash is loosened?), then G = 8–16 (the
+group baseline is estimated from 4 samples, and 12/12 groups were measured to
+have all-distinct wrong items), then temperature ≥ 1.2. Only a β run can
+distinguish "the reward is wrong" from "the policy was never allowed to move" —
+and everything above says it is the second.
 
 ### Proposed: dense reward (designed, not yet run)
 
