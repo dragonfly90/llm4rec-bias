@@ -1265,12 +1265,46 @@ constraint is not fighting it: HR@1 2.00% and NDCG@10 0.0396, both project
 bests, from the plain γ=0 variant. The bias-resistance claim is unsupported at
 this β.
 
-**Next lever, in order:** β ∈ {0.005, 0.01, 0.02} with the SDA reward held fixed
-(does the policy move at all when the leash is loosened?), then G = 8–16 (the
-group baseline is estimated from 4 samples, and 12/12 groups were measured to
-have all-distinct wrong items), then temperature ≥ 1.2. Only a β run can
-distinguish "the reward is wrong" from "the policy was never allowed to move" —
-and everything above says it is the second.
+### 5c. Verdict on the bias claim: not supported
+
+Four SDA variants, all at 300 steps / 300 test users. The issue proposes SDA as
+*bias-resistant* RL; on this setup it is the opposite of that.
+
+| config | ΔGAP ↓ | pop_lift ↓ | Gini ↓ | cov@10 ↑ | hr_ips@10 ↑ |
+|---|---|---|---|---|---|
+| SFT (no RL at all) | +0.188 | +0.483 | **0.972** | **7.4%** | 0.58% |
+| minionerec + pop w=1.0 (heuristic tax) | **+0.163** | **+0.458** | 0.974 | 6.5% | **0.67%** |
+| SDA γ=0 | +0.196 | +0.491 | 0.981 | 6.0% | 0.49% |
+| SDA + pop tax w=1.0 | +0.195 | +0.489 | 0.980 | 6.3% | 0.49% |
+| SDA γ=0.3 (debiased target) | +0.191 | +0.486 | 0.979 | 6.2% | 0.50% |
+| SDA γ=0.3, β=0.01 | +0.192 | +0.486 | 0.979 | 6.4% | 0.41% |
+
+Every SDA variant lands in ΔGAP **+0.191 … +0.196** — a 0.005 band, all *worse*
+than not running RL, and all well behind the crude popularity tax at +0.163.
+Exposure is more concentrated (Gini 0.979–0.981 vs 0.972), coverage lower
+(6.0–6.4% vs 7.4%), and IPS-corrected accuracy lower (0.41–0.50% vs 0.58%) —
+that last one saying the accuracy SDA *did* gain was bought on head items.
+
+**The mechanism is sound and never got to act.** The $1/Q_\theta$ factor really
+does price over-recommendation: an item the policy emits constantly is penalized
+automatically, no tax needed. It failed twice over — the target itself carried
+pop_lift +0.466, and once that was removed (target ΔGAP +0.023) the policy moved
+0.005 anyway.
+
+**What this does and does not establish.** It does not prove SDA cannot reduce
+bias: at 0.32 epochs and lr 5e-6 nothing moves, so the comparison against an
+*absolute* standard is confounded. What is not confounded is the comparison at
+**equal budget**, and there a one-line popularity penalty beats the derived-from-
+a-loss method on the exact axis the method was proposed for. SDA's demonstrated
+value is elsewhere — HR@1 2.00% and NDCG@10 0.0396 (project bests) and a 20×
+reduction in zero-gradient groups (`frac_reward_zero_std` 0.24 → 0.012).
+
+**Next lever, in order:** `--lr` (5e-6 → 2e-5 → 5e-5), never varied in any run
+here and now the prime suspect; then G = 8–16 (the group baseline is estimated
+from 4 samples, and 12/12 groups were measured to have all-distinct wrong
+items); then temperature ≥ 1.2, which is what would put rare items in the
+rollouts for the reward to reweight at all. β is settled and needs no further
+runs.
 
 ### Proposed: dense reward (designed, not yet run)
 
