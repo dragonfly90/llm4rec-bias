@@ -210,6 +210,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | **SDA** | sda (log P*/Q_θ) | **2.0%** | 7.0% | **0.040** | +0.491 | +0.196 | 0.981 | 6.0% | 98% |
 | SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
 | SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
+| SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -265,27 +266,63 @@ not.
 configuration moved a single non-head target — consistent with the capacity
 floor documented below.
 
-### The knobs we never turned (and why KL is probably the binding constraint)
+### The knobs we never turned — and the one that turned out not to matter
 
 Every run in this repo used the CLI defaults for the three parameters that
 decide whether a reward can act at all: **β = 0.04, temperature = 0.9,
-`num_generations` = 4**. All nine runs varied only the reward. That is a real
-gap in the experiment design, and it may explain the weak results above better
-than any reward-shape argument.
+`num_generations` = 4**. Nine runs varied only the reward. That was a real gap
+in the experiment design, and the section below was written arguing it explained
+the weak results better than any reward-shape argument.
 
-**1. KL strength (`--beta`) — the biggest untried lever.** The bias lives in
-the *SFT prior*: SFT alone gives pop_lift +0.483 and ΔGAP +0.188 before RL
-touches anything. The GRPO objective is
+**One of those knobs has now been turned, and the argument was wrong.**
+
+**1. ~~KL strength (`--beta`) — the biggest untried lever~~ — measured, and it
+is not the constraint.** The hypothesis was: the bias lives in the SFT prior
+(pop_lift +0.483, ΔGAP +0.188 before RL touches anything), and since the GRPO
+objective is
 
 $$\mathcal{L} = -\mathbb{E}\big[A \cdot \log \pi\big] \;+\; \beta\, D_{\mathrm{KL}}\big(\pi \,\|\, \pi_{\mathrm{SFT}}\big)$$
 
-so every popularity penalty we added was fighting a regularizer whose explicit
-job is to hold the policy where the bias already is. "Repriced but did not
-reroute" is exactly what a binding KL constraint looks like — no reward-design
-flaw required. A sweep over β ∈ {0.005, 0.02, 0.04, 0.1} separates *"the
-reward is too weak"* from *"KL won't let it move."* The experiment plan above
-lists the KL sweep as the **generic mitigation baseline**; we never ran it, so
-every mechanism-guided result here is currently uncontrolled against it.
+every popularity penalty was fighting a regularizer whose explicit job is to
+hold the policy where the bias already is. "Repriced but did not reroute" is
+what a binding KL constraint looks like — no reward-design flaw required.
+
+It was a good hypothesis. It is false. Re-running the SDA γ=0.3 configuration at
+**β = 0.01**, changing nothing else:
+
+| | β = 0.04 | β = 0.01 | change |
+|---|---|---|---|
+| mean KL over matched steps | 0.0213 | 0.0228 | **1.07×** |
+| final KL | 0.049 | 0.054 | 1.10× |
+| final entropy | 1.292 | 1.287 | — |
+| ΔGAP | +0.1913 | +0.1916 | **+0.0003** |
+| pop_lift@1 | +0.486 | +0.486 | 0.000 |
+| exposure Gini | 0.979 | 0.979 | 0.000 |
+| HR@10 | 7.0% | 6.0% | −1.0pp |
+
+**A 4× looser leash produced a 1.07× change in KL and a 0.0003 change in ΔGAP.**
+The two runs are the same trajectory. The KL term was never binding: at β=0.04
+it contributes $\beta \cdot D \approx 0.04 \times 0.05 = 0.002$ against
+advantage-weighted terms of order $|A| \approx 1$ — three orders of magnitude
+below the pull it was supposed to be resisting. (Corroborating: trl 1.8's own
+`GRPOConfig` default is now `beta=0.0`. This repo's 0.04 is an older
+convention.)
+
+**What is actually binding: the optimization budget.** 300 steps × 4 prompts =
+1200 of 3724 training rows — **0.32 epochs**, 4800 rollouts total, at
+`lr = 5e-6` with LoRA r=16. The policy is not being held back; it is barely
+being pushed. That reframes every null in this document: the rewards were not
+too weak *relative to a regularizer*, they were applied for too few, too small
+updates to move a distribution at all.
+
+The strongest form of the evidence is the γ sweep combined with the run table:
+across five reward configurations the **objective's** ΔGAP spans 0.149 while the
+**policy's** spans 0.033, and pointing the objective at a near-unbiased target
+(+0.023) bought a 0.005 move. Reward design is not the lever for bias on this
+setup — and neither is β.
+
+**Untried, in the new priority order:** `--lr` (5e-6 → 5e-5, never varied in any
+run), `--steps` / epochs, then `num_generations` and temperature below.
 
 **2. Sampling temperature — this likely explains the `rare_hit_bonus` null.** A
 reward can only reweight actions the policy actually samples. With Gini 0.97
