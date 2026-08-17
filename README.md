@@ -18,6 +18,58 @@ Two task routes are implemented:
 | Item identity | letters A–J per prompt | global `<s0_i><s1_j><s2_k><s3_c>` codes; similar movies share prefixes |
 | Files | `data / sft / grpo / eval / reward` | `semid / sid_data / sid_sft / sid_grpo / sid_eval / sid_reward` |
 
+## Findings
+
+Thirteen stage-2 checkpoints on the semantic-ID route — seven reward designs
+under GRPO, a KL-strength test, and two runs of a reward-free distillation
+trainer. All start from the same SFT checkpoint and are scored the same way
+(300 test users, constrained-beam retrieval over 1,682 items). Details and
+tables are in [Route 2](#route-2-semantic-id-generative-retrieval).
+
+**1. No reward design moved the bias.** Seven configurations — prefix credit,
+the MiniOneRec rank-aware hybrid, catalog and user-anchored popularity taxes, a
+propensity-weighted rare-hit bonus, and SDA in two forms — land in
+ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188. The one that helped,
+barely, is the crudest: a flat popularity penalty at w=1.0 (+0.163).
+
+**2. β is not the binding constraint, contrary to what this README argued at
+length.** A 4× looser KL leash changed mean KL by **1.07×** and ΔGAP by
+**0.0003**. At β=0.04 the penalty contributes ~0.002 against advantage-weighted
+terms of order 1. What actually binds is the optimization budget: 300 steps ×
+4 prompts is **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
+
+**3. Pointing the objective at an unbiased target does not make the policy
+unbiased.** A propensity-debiased transition model reaches ΔGAP **+0.023**;
+GRPO against it produced a policy at **+0.191**. Across five configurations the
+objective's ΔGAP spans 0.149 while the policy's spans 0.033.
+
+**4. The reward *formulation* was the problem, not the objective.** SDA's
+target and KL, with only the gradient estimator changed — sampling from the
+target instead of from the policy with an importance ratio — gives the first
+stage-2 method to beat SFT on anything:
+
+| | HR@10 | NDCG@10 | Gini ↓ | coverage@10 ↑ |
+|---|---|---|---|---|
+| SFT (no stage 2) | 7.67% | 0.0390 | 0.972 | 7.4% |
+| best of 11 RL runs | 7.33% | 0.0384 | 0.974 | 6.5% |
+| distillation, matched budget | **8.67%** | **0.0489** | 0.975 | 7.1% |
+| distillation, 1.07 epochs | 8.00% | 0.0366 | **0.967** | **9.6%** |
+
+Why: GRPO divides advantages by each group's std, discarding the magnitudes
+that carry a forward KL's mass-covering signal, and it samples from $Q_\theta$
+while the dominant terms are those with $Q_\theta\to0$ — never drawn at Gini
+0.97. Both are structural, not tuning.
+
+**5. Nothing moved the tail.** mid/tail HR@10 is **0% in every one of the
+thirteen runs** (n = 73/15). Coverage improves by recommending more distinct
+head-adjacent items, not by reaching the tail. That is a capacity floor for a
+0.5B model over 1,682 items, and no loss or reward design reaches it.
+
+**Reading the table:** the best accuracy and the best exposure numbers come
+from *different* checkpoints of the same method, and the best popularity
+numbers from a different method entirely. There is no single winner — these
+are points on a frontier, and any single-number claim here is cherry-picked.
+
 ## Route 1: letter choice
 
 Next-movie **choice**: prompt = user's recent watch history (titles) + C=10
@@ -207,6 +259,12 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | **+pop w=1.0** | minionerec + pop w=1.0 | **1.7%** | 7.3% | 0.038 | **+0.458** | **+0.163** | 0.974 | 6.5% | 100% |
 | +ΔGAP | minionerec + pop user w=0.5, wrong-only | 1.3% | 6.3% | 0.034 | +0.486 | +0.191 | 0.979 | 6.0% | 100% |
 | +rare-hit | minionerec + rare-hit w=1.0 | 1.0% | 6.3% | 0.032 | +0.487 | +0.193 | 0.980 | 5.8% | 100% |
+| **SDA** | sda (log P*/Q_θ) | **2.0%** | 7.0% | **0.040** | +0.491 | +0.196 | 0.981 | 6.0% | 98% |
+| SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
+| SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
+| SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
+| **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
+| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | **0.967** | **9.6%** | 100% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -262,27 +320,63 @@ not.
 configuration moved a single non-head target — consistent with the capacity
 floor documented below.
 
-### The knobs we never turned (and why KL is probably the binding constraint)
+### The knobs we never turned — and the one that turned out not to matter
 
 Every run in this repo used the CLI defaults for the three parameters that
 decide whether a reward can act at all: **β = 0.04, temperature = 0.9,
-`num_generations` = 4**. All nine runs varied only the reward. That is a real
-gap in the experiment design, and it may explain the weak results above better
-than any reward-shape argument.
+`num_generations` = 4**. Nine runs varied only the reward. That was a real gap
+in the experiment design, and the section below was written arguing it explained
+the weak results better than any reward-shape argument.
 
-**1. KL strength (`--beta`) — the biggest untried lever.** The bias lives in
-the *SFT prior*: SFT alone gives pop_lift +0.483 and ΔGAP +0.188 before RL
-touches anything. The GRPO objective is
+**One of those knobs has now been turned, and the argument was wrong.**
+
+**1. ~~KL strength (`--beta`) — the biggest untried lever~~ — measured, and it
+is not the constraint.** The hypothesis was: the bias lives in the SFT prior
+(pop_lift +0.483, ΔGAP +0.188 before RL touches anything), and since the GRPO
+objective is
 
 $$\mathcal{L} = -\mathbb{E}\big[A \cdot \log \pi\big] \;+\; \beta\, D_{\mathrm{KL}}\big(\pi \,\|\, \pi_{\mathrm{SFT}}\big)$$
 
-so every popularity penalty we added was fighting a regularizer whose explicit
-job is to hold the policy where the bias already is. "Repriced but did not
-reroute" is exactly what a binding KL constraint looks like — no reward-design
-flaw required. A sweep over β ∈ {0.005, 0.02, 0.04, 0.1} separates *"the
-reward is too weak"* from *"KL won't let it move."* The experiment plan above
-lists the KL sweep as the **generic mitigation baseline**; we never ran it, so
-every mechanism-guided result here is currently uncontrolled against it.
+every popularity penalty was fighting a regularizer whose explicit job is to
+hold the policy where the bias already is. "Repriced but did not reroute" is
+what a binding KL constraint looks like — no reward-design flaw required.
+
+It was a good hypothesis. It is false. Re-running the SDA γ=0.3 configuration at
+**β = 0.01**, changing nothing else:
+
+| | β = 0.04 | β = 0.01 | change |
+|---|---|---|---|
+| mean KL over matched steps | 0.0213 | 0.0228 | **1.07×** |
+| final KL | 0.049 | 0.054 | 1.10× |
+| final entropy | 1.292 | 1.287 | — |
+| ΔGAP | +0.1913 | +0.1916 | **+0.0003** |
+| pop_lift@1 | +0.486 | +0.486 | 0.000 |
+| exposure Gini | 0.979 | 0.979 | 0.000 |
+| HR@10 | 7.0% | 6.0% | −1.0pp |
+
+**A 4× looser leash produced a 1.07× change in KL and a 0.0003 change in ΔGAP.**
+The two runs are the same trajectory. The KL term was never binding: at β=0.04
+it contributes $\beta \cdot D \approx 0.04 \times 0.05 = 0.002$ against
+advantage-weighted terms of order $|A| \approx 1$ — three orders of magnitude
+below the pull it was supposed to be resisting. (Corroborating: trl 1.8's own
+`GRPOConfig` default is now `beta=0.0`. This repo's 0.04 is an older
+convention.)
+
+**What is actually binding: the optimization budget.** 300 steps × 4 prompts =
+1200 of 3724 training rows — **0.32 epochs**, 4800 rollouts total, at
+`lr = 5e-6` with LoRA r=16. The policy is not being held back; it is barely
+being pushed. That reframes every null in this document: the rewards were not
+too weak *relative to a regularizer*, they were applied for too few, too small
+updates to move a distribution at all.
+
+The strongest form of the evidence is the γ sweep combined with the run table:
+across five reward configurations the **objective's** ΔGAP spans 0.149 while the
+**policy's** spans 0.033, and pointing the objective at a near-unbiased target
+(+0.023) bought a 0.005 move. Reward design is not the lever for bias on this
+setup — and neither is β.
+
+**Untried, in the new priority order:** `--lr` (5e-6 → 5e-5, never varied in any
+run), `--steps` / epochs, then `num_generations` and temperature below.
 
 **2. Sampling temperature — this likely explains the `rare_hit_bonus` null.** A
 reward can only reweight actions the policy actually samples. With Gini 0.97
@@ -1074,14 +1168,295 @@ Telemetry: `sda/log_ratio_{mean,std}`, `sda/logp_mean`, `sda/logq_mean`,
 `sda/gap_l{1,2,3}` (per-level chain-rule mismatch at the sampled codes) —
 so the coarse→fine decomposition is a per-step curve, not just an equation.
 
-**Results: running, not yet measured.** Two arms at the repo's standard GRPO
-settings (β=0.04, T=0.9, G=4, 300 steps, seed 42), so the reward is the only
-thing that differs from the nine checkpoints in the table above:
-`sid_grpo_sda` (pure alignment) and `sid_grpo_sda_pop` (`--pop-weight 1.0`,
-stacking the one add-on that measurably reduced bias — orthogonal to $P^{*}$,
-so unlike the alignment term it is not capped by the teacher's own profile).
-Nothing here should be read as a measured result until this paragraph is
-replaced by an eval table.
+**Result: best top-1 accuracy in the project, worst bias.** 300 steps at the
+repo's standard settings (β=0.04, T=0.9, G=4, seed 42), so the reward is the
+only thing that differs from the nine checkpoints above. 300 test users:
+
+| metric | want | SFT | best prior RL (`+pop w=1.0`) | **SDA** |
+|---|---|---|---|---|
+| HR@1 | ↑ | 1.33% | 1.67% | **2.00%** |
+| NDCG@10 | ↑ | 0.0390 | 0.0384 | **0.0396** |
+| HR@10 | ↑ | **7.67%** | 7.33% | 7.00% |
+| hr_ips@10 | ↑ | 0.58% | **0.67%** | 0.49% |
+| pop_lift@1 | ↓ | +0.483 | **+0.458** | +0.491 |
+| ΔGAP | ↓ | +0.188 | **+0.163** | +0.196 |
+| exposure Gini | ↓ | **0.972** | 0.974 | 0.981 |
+| coverage@10 | ↑ | **7.4%** | 6.5% | 6.0% |
+| free-gen validity | ↑ | 94% | **100%** | 98% |
+
+The alignment signal **transfers**: HR@1 2.00% and NDCG@10 0.0396 are the best
+in the project (previous ceiling 1.67% / 0.0390), a +50% relative HR@1 gain over
+SFT. A teacher that ranks better than the student made the student's top pick
+better — which is the one thing no heuristic reward here achieved, since all of
+them draw their signal from the same single held-out label the policy already
+overfits.
+
+**But it moved bias the wrong way, and the ceiling analysis above predicted the
+wrong sign.** Every bias metric is worse than SFT (ΔGAP +0.196, pop_lift +0.491,
+Gini 0.981), and `hr_ips@10` *fell* to 0.49% — the accuracy was bought on head
+items. The prediction was that alignment would drag the policy toward $P^{*}$'s
+slightly cleaner profile (ΔGAP +0.163); instead the policy moved toward
+$P^{*}$'s *ranking* while ending up more concentrated than $P^{*}$ or the SFT
+prior. The teacher's profile is a **ceiling on how good the bias can get, not a
+floor on how bad**: matching a distribution's argmax ordering does not mean
+inheriting its spread, and the KL-constrained policy took the cheapest path to
+the ordering, which runs through the head.
+
+Caveats: single run; HR@10 7.00% sits inside the documented 4.3–7.7% GRPO
+spread, so that dip is not distinguishable from stage noise. The popularity
+metrics are the trustworthy column here (±0.003 across reruns). Tail HR is 0%,
+as with every other reward in this repo — the capacity floor is untouched.
+
+### 5b. Redoing it: debias the target, not the policy
+
+**The obvious follow-up failed, informatively.** `--reward sda --pop-weight 1.0`
+bolts the one add-on that previously worked onto the alignment reward. The tax
+is orthogonal to $P^{*}$, so it is not capped by the teacher's profile:
+
+| metric | SFT | SDA | **SDA + pop w=1.0** |
+|---|---|---|---|
+| HR@1 | 1.33% | **2.00%** | 1.00% |
+| HR@10 | **7.67%** | 7.00% | 7.33% |
+| ΔGAP | +0.188 | +0.196 | +0.195 |
+| pop_lift@1 | +0.483 | +0.491 | +0.489 |
+| exposure Gini | **0.972** | 0.981 | 0.980 |
+
+ΔGAP moved by **0.001** while HR@1 lost half its gain. That is "repriced but did
+not reroute" for the third time in this repo, and the mechanism is now clear: a
+heuristic penalty and a distribution-alignment objective are two terms pulling
+in different directions, and under a KL constraint the alignment term wins the
+direction while the tax only costs accuracy. Stacking does not work here.
+
+**So the correction belongs inside the target.** Rather than taxing the policy
+for following $P^{*}$, debias $P^{*}$ itself with an inverse-propensity
+reweighting, renormalized over the catalog:
+
+$$\tilde P^{*}(i) \;=\; \frac{P^{*}(i)\,/\,\mathrm{count}(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j)\,/\,\mathrm{count}(j)^{\gamma}}
+\qquad (\texttt{--sda-pop-gamma}, \ \gamma = 0.3)$$
+
+The policy still optimizes **one** KL — it is simply aimed at the next-step
+distribution the user would have under uniform exposure. Nothing fights
+anything. (The normalizer is a per-prompt constant that GRPO's group baseline
+cancels; it is computed anyway so `sda/logp_mean` stays a real log-probability.)
+
+$\gamma$ is picked from the target, before spending any GPU on RL — the same
+"measure the ceiling first" move, which is cheap because scoring $P^{*}$ needs
+no LLM (300 test users):
+
+| γ | HR@1 | HR@10 | pop_lift@1 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|
+| 0.0 | **2.33%** | **8.00%** | +0.467 | +0.172 | 0.974 | 8.6% |
+| 0.1 | 1.00% | 7.00% | +0.462 | +0.167 | 0.971 | 9.2% |
+| 0.2 | 1.00% | 7.00% | +0.448 | +0.154 | 0.969 | 9.6% |
+| **0.3** | 1.00% | 6.00% | **+0.317** | **+0.023** | **0.968** | **10.2%** |
+| 0.5 | 0.00% | 3.67% | −0.192 | −0.486 | 0.972 | 10.0% |
+
+Two things fall out. **ΔGAP +0.023 at γ=0.3 is near-neutral** — an order of
+magnitude below anything else in this repo (best prior: +0.163) — and the target
+still ranks at HR@10 6.0%, far above chance. But **the teacher's top-1 accuracy
+is carried by popularity**: HR@1 halves at γ=0.1, long before the bias moves.
+That is the repo's own headline finding (accuracy is popularity-farmed, IPS-HR
+13× below raw) reappearing inside the target distribution. γ=0.5 overshoots into
+obscurity — negative lift is not neutrality.
+
+The second change is to the reward's shape rather than its target. Plain SDA
+started with **35% invalid rollouts**, so a large share of the reward variance
+trained *format*, not alignment — and the cheapest way to emit a valid ID is to
+emit a familiar, popular one, which is plausibly part of why that run
+concentrated exposure. The log ratios are now z-scored within each GRPO group
+and clipped at ±2, with invalid pinned at −3 (`--sda-standardize`, default on):
+
+$$\tilde R(i_k) = \mathrm{clip}\!\left(\frac{r_k - \mu_{G,\mathrm{valid}}}{\sigma_{G,\mathrm{valid}}},\ \pm 2\right),
+\qquad r_k = \log \tilde P^{*}(i_k) - \log Q_\theta(i_k)$$
+
+GRPO re-standardizes the group afterwards, so the alignment *ordering* is
+untouched; what this fixes is the **ratio** between the alignment contrast and
+the validity contrast, which was otherwise at the mercy of how much a given
+group's log ratios happened to disagree. Invalid stays strictly dominated.
+
+Reproduce the original reward with `--sda-pop-gamma 0 --no-sda-standardize`.
+
+**Result: the redesign is a null — and that null is the most informative
+measurement in this section.** γ=0.3 + standardization, same 300 steps and
+settings:
+
+| metric | want | SFT | SDA | **SDA v2 (γ=0.3, standardized)** |
+|---|---|---|---|---|
+| HR@1 | ↑ | 1.33% | **2.00%** | 1.00% |
+| HR@10 | ↑ | **7.67%** | 7.00% | 7.00% |
+| NDCG@10 | ↑ | 0.0390 | **0.0396** | 0.0356 |
+| hr_ips@10 | ↑ | **0.58%** | 0.49% | 0.50% |
+| pop_lift@1 | ↓ | **+0.483** | +0.491 | +0.486 |
+| ΔGAP | ↓ | **+0.188** | +0.196 | +0.191 |
+| exposure Gini | ↓ | **0.972** | 0.981 | 0.979 |
+| coverage@10 | ↑ | **7.4%** | 6.0% | 6.2% |
+
+Aiming the objective at a **near-unbiased target** (ΔGAP +0.023) moved the
+policy's ΔGAP from +0.196 to +0.191. It also gave back the HR@1 gain. Both
+changes in the redesign — target debiasing and reward standardization — did
+essentially nothing to the retrieval distribution.
+
+**The invariance is the finding.** Across the five configurations now measured,
+the *reward's target* varies enormously while the *policy's behavior* barely
+moves:
+
+| | ΔGAP range | pop_lift range |
+|---|---|---|
+| what the rewards aim at (γ sweep on $\tilde P^{*}$) | +0.023 … +0.172 (**0.149**) | +0.317 … +0.467 (0.150) |
+| what the policies do (SFT, +pop, SDA, SDA+pop, SDA v2) | +0.163 … +0.196 (**0.033**) | +0.458 … +0.491 (0.033) |
+
+A 0.149 swing in the objective buys a 0.005 swing in behavior. That is a far
+sharper test of the repo's **"β is the binding constraint"** hypothesis than the
+β sweep it proposed: we did not merely fail to find a better reward shape, we
+pointed the objective at an almost-unbiased distribution and the KL leash held
+the policy at the SFT prior anyway (final KL 0.049). Under β=0.04, T=0.9, G=4,
+**reward design is not the lever for bias on this setup** — and that conclusion
+now rests on five configurations spanning heuristic penalties, distribution
+alignment, and a debiased alignment target, rather than on one run.
+
+What SDA *did* buy is real and lives on the accuracy side, where the KL
+constraint is not fighting it: HR@1 2.00% and NDCG@10 0.0396, both project
+bests, from the plain γ=0 variant. The bias-resistance claim is unsupported at
+this β.
+
+### 5c. Verdict on the bias claim: not supported
+
+Four SDA variants, all at 300 steps / 300 test users. The issue proposes SDA as
+*bias-resistant* RL; on this setup it is the opposite of that.
+
+| config | ΔGAP ↓ | pop_lift ↓ | Gini ↓ | cov@10 ↑ | hr_ips@10 ↑ |
+|---|---|---|---|---|---|
+| SFT (no RL at all) | +0.188 | +0.483 | **0.972** | **7.4%** | 0.58% |
+| minionerec + pop w=1.0 (heuristic tax) | **+0.163** | **+0.458** | 0.974 | 6.5% | **0.67%** |
+| SDA γ=0 | +0.196 | +0.491 | 0.981 | 6.0% | 0.49% |
+| SDA + pop tax w=1.0 | +0.195 | +0.489 | 0.980 | 6.3% | 0.49% |
+| SDA γ=0.3 (debiased target) | +0.191 | +0.486 | 0.979 | 6.2% | 0.50% |
+| SDA γ=0.3, β=0.01 | +0.192 | +0.486 | 0.979 | 6.4% | 0.41% |
+
+Every SDA variant lands in ΔGAP **+0.191 … +0.196** — a 0.005 band, all *worse*
+than not running RL, and all well behind the crude popularity tax at +0.163.
+Exposure is more concentrated (Gini 0.979–0.981 vs 0.972), coverage lower
+(6.0–6.4% vs 7.4%), and IPS-corrected accuracy lower (0.41–0.50% vs 0.58%) —
+that last one saying the accuracy SDA *did* gain was bought on head items.
+
+**The mechanism is sound and never got to act.** The $1/Q_\theta$ factor really
+does price over-recommendation: an item the policy emits constantly is penalized
+automatically, no tax needed. It failed twice over — the target itself carried
+pop_lift +0.466, and once that was removed (target ΔGAP +0.023) the policy moved
+0.005 anyway.
+
+**What this does and does not establish.** It does not prove SDA cannot reduce
+bias: at 0.32 epochs and lr 5e-6 nothing moves, so the comparison against an
+*absolute* standard is confounded. What is not confounded is the comparison at
+**equal budget**, and there a one-line popularity penalty beats the derived-from-
+a-loss method on the exact axis the method was proposed for. SDA's demonstrated
+value is elsewhere — HR@1 2.00% and NDCG@10 0.0396 (project bests) and a 20×
+reduction in zero-gradient groups (`frac_reward_zero_std` 0.24 → 0.012).
+
+**Next lever, in order:** `--lr` (5e-6 → 2e-5 → 5e-5), never varied in any run
+here and now the prime suspect; then G = 8–16 (the group baseline is estimated
+from 4 samples, and 12/12 groups were measured to have all-distinct wrong
+items); then temperature ≥ 1.2, which is what would put rare items in the
+rollouts for the reward to reweight at all. β is settled and needs no further
+runs.
+
+### 5d. Dropping the reward entirely: SDA as distillation
+
+If the objective is $D_{\mathrm{KL}}(P^{*}\|Q_\theta)$, the reward $P^{*}/Q_\theta$
+is only one way to estimate its gradient — and two measurements say it is a bad
+one here. GRPO divides advantages by each group's std, discarding the *magnitude*
+that carries a forward KL's entire mass-covering signal; and the estimator draws
+from $Q_\theta$ while the dominant terms are those with $Q_\theta \to 0$, which
+at Gini 0.97 are never sampled. But the same gradient has a second estimator:
+
+$$\mathbb{E}_{s\sim Q_\theta}\!\left[\frac{P^{*}(s)}{Q_\theta(s)}\nabla\log Q_\theta(s)\right]
+= \mathbb{E}_{s\sim P^{*}}\big[\nabla\log Q_\theta(s)\big]$$
+
+Sample from the **target** instead of the policy: no importance ratio, no
+clipping, no advantage normalization, and tail items enter the gradient by
+construction. A KL to a known distribution over an enumerable output space is a
+distillation problem, and casting it as a reward costs the mechanism.
+[`sid_distill.py`](src/llm4rec/sid_distill.py) is that trainer — same pipeline
+slot as GRPO (merged SFT weights → fresh LoRA → adapter `sid_eval` scores), no
+rollouts, no rewards:
+
+$$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*})
+\;+\; (1-\alpha)\,\underset{i_m\sim \tilde P^{*}}{\mathrm{mean}}\ \mathrm{CE}(i_m)
+\;+\; \lambda\, D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
+
+The items are **sampled** from $\tilde P^{*}$, not taken top-M: truncating to the
+mode would re-concentrate the very spread the objective exists to transfer. The
+third term is the only loss in this repo that sees more than one example at a
+time — Gini and coverage are properties of the *pooled* recommendations across
+users, so a per-example objective can only reach them indirectly.
+
+**Result at matched budget** (600 steps × 2 prompts = 1200 prompts, the same
+count the 300-step GRPO runs saw):
+
+| metric | SFT | best RL (+pop w=1.0) | best SDA reward | **distill** |
+|---|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | 2.00% | **2.33%** |
+| HR@10 ↑ | 7.67% | 7.33% | 7.00% | **8.67%** |
+| NDCG@10 ↑ | 0.0390 | 0.0384 | 0.0396 | **0.0489** |
+| hr_ips@10 ↑ | 0.58% | **0.67%** | 0.49% | 0.64% |
+| validity ↑ | 94% | 100% | 98% | **100%** |
+| pop_lift@1 ↓ | **+0.483** | +0.458 | +0.491 | +0.487 |
+| ΔGAP ↓ | +0.188 | **+0.163** | +0.196 | +0.192 |
+| Gini ↓ | **0.972** | 0.974 | 0.981 | 0.975 |
+| coverage@10 ↑ | **7.4%** | 6.5% | 6.0% | 7.1% |
+
+**On accuracy this is the first thing in the project that works.** HR@10 8.67%
+and NDCG 0.0489 are the best numbers here, and it is the **first stage-2 method
+of any kind to beat the SFT baseline** — all eleven RL checkpoints came in below
+SFT's 7.67%. It also repairs the exposure damage RL caused (Gini 0.975 and
+coverage 7.1%, versus 0.979–0.981 and 6.0–6.4%).
+
+**On bias it changes nothing.** ΔGAP +0.192 and pop_lift +0.487 are
+indistinguishable from the reward-based runs and still marginally worse than not
+training at all. Training against a target measured at ΔGAP **+0.023** produced a
+policy at **+0.192**, and per-tier HR is head 12.3% / mid 0% / tail 0% — the
+gain is entirely head.
+
+The likely cause is structural rather than a tuning miss: at $\alpha = 0.5$ half
+the loss is cross-entropy on the ground-truth labels, and **those labels are the
+popularity-skewed signal that created the bias** (held-out targets average 0.77
+popularity quantile). The debiased soft target is being cancelled by a biased
+hard target.
+
+**At 1.07 epochs the exposure bias finally moves.** Distillation runs at
+~1.7 s/step (7× faster than GRPO — no generation), so a real budget is
+affordable for the first time in this project. Same configuration, 2000 steps:
+
+| metric | SFT | best RL | distill 600 | **distill 2k** |
+|---|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | **2.33%** | 0.67% |
+| HR@10 ↑ | 7.67% | 7.33% | **8.67%** | 8.00% |
+| NDCG@10 ↑ | 0.0390 | 0.0384 | **0.0489** | 0.0366 |
+| pop_lift@1 ↓ | +0.483 | **+0.458** | +0.487 | +0.477 |
+| ΔGAP ↓ | +0.188 | **+0.163** | +0.192 | +0.182 |
+| exposure Gini ↓ | 0.972 | 0.974 | 0.975 | **0.967** |
+| coverage@10 ↑ | 7.4% | 6.5% | 7.1% | **9.6%** |
+
+**coverage@10 9.6% (+30% relative over SFT) and Gini 0.967 are the best
+exposure numbers in this repo**, and ΔGAP +0.182 is the first SDA-family run
+below the SFT baseline. Twelve prior stage-2 runs made exposure *worse*.
+
+It is paid for in rank-1 accuracy: HR@1 collapses 2.33% → 0.67% while HR@**10**
+holds at 8.00% — the model still finds the target within ten, it just stops
+putting it first. That is the signature of a flattened output distribution,
+which is exactly what the objective requested.
+
+So the two arms are two points on a frontier, not a better/worse pair: 600
+steps is the accuracy corner, 2000 the exposure corner. Budget was a real
+constraint — 3.3× the steps produced the first genuine exposure improvement
+here, where twelve RL runs at 0.32 epochs produced none.
+
+Two caveats. The *popularity* metrics (pop_lift +0.477, ΔGAP +0.182) are better
+than SFT but still behind the one-line popularity tax (+0.458 / +0.163) — the
+exposure term targets concentration directly, and nothing in this loss targets
+per-user popularity anchoring as sharply as the user-anchored tax does. And
+mid/tail HR are 0% in both arms: coverage rose because more distinct
+head-adjacent items get recommended, not because the tail became reachable.
 
 ### Proposed: dense reward (designed, not yet run)
 
