@@ -18,6 +18,58 @@ Two task routes are implemented:
 | Item identity | letters A–J per prompt | global `<s0_i><s1_j><s2_k><s3_c>` codes; similar movies share prefixes |
 | Files | `data / sft / grpo / eval / reward` | `semid / sid_data / sid_sft / sid_grpo / sid_eval / sid_reward` |
 
+## Findings
+
+Thirteen stage-2 checkpoints on the semantic-ID route — seven reward designs
+under GRPO, a KL-strength test, and two runs of a reward-free distillation
+trainer. All start from the same SFT checkpoint and are scored the same way
+(300 test users, constrained-beam retrieval over 1,682 items). Details and
+tables are in [Route 2](#route-2-semantic-id-generative-retrieval).
+
+**1. No reward design moved the bias.** Seven configurations — prefix credit,
+the MiniOneRec rank-aware hybrid, catalog and user-anchored popularity taxes, a
+propensity-weighted rare-hit bonus, and SDA in two forms — land in
+ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188. The one that helped,
+barely, is the crudest: a flat popularity penalty at w=1.0 (+0.163).
+
+**2. β is not the binding constraint, contrary to what this README argued at
+length.** A 4× looser KL leash changed mean KL by **1.07×** and ΔGAP by
+**0.0003**. At β=0.04 the penalty contributes ~0.002 against advantage-weighted
+terms of order 1. What actually binds is the optimization budget: 300 steps ×
+4 prompts is **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
+
+**3. Pointing the objective at an unbiased target does not make the policy
+unbiased.** A propensity-debiased transition model reaches ΔGAP **+0.023**;
+GRPO against it produced a policy at **+0.191**. Across five configurations the
+objective's ΔGAP spans 0.149 while the policy's spans 0.033.
+
+**4. The reward *formulation* was the problem, not the objective.** SDA's
+target and KL, with only the gradient estimator changed — sampling from the
+target instead of from the policy with an importance ratio — gives the first
+stage-2 method to beat SFT on anything:
+
+| | HR@10 | NDCG@10 | Gini ↓ | coverage@10 ↑ |
+|---|---|---|---|---|
+| SFT (no stage 2) | 7.67% | 0.0390 | 0.972 | 7.4% |
+| best of 11 RL runs | 7.33% | 0.0384 | 0.974 | 6.5% |
+| distillation, matched budget | **8.67%** | **0.0489** | 0.975 | 7.1% |
+| distillation, 1.07 epochs | 8.00% | 0.0366 | **0.967** | **9.6%** |
+
+Why: GRPO divides advantages by each group's std, discarding the magnitudes
+that carry a forward KL's mass-covering signal, and it samples from $Q_\theta$
+while the dominant terms are those with $Q_\theta\to0$ — never drawn at Gini
+0.97. Both are structural, not tuning.
+
+**5. Nothing moved the tail.** mid/tail HR@10 is **0% in every one of the
+thirteen runs** (n = 73/15). Coverage improves by recommending more distinct
+head-adjacent items, not by reaching the tail. That is a capacity floor for a
+0.5B model over 1,682 items, and no loss or reward design reaches it.
+
+**Reading the table:** the best accuracy and the best exposure numbers come
+from *different* checkpoints of the same method, and the best popularity
+numbers from a different method entirely. There is no single winner — these
+are points on a frontier, and any single-number claim here is cherry-picked.
+
 ## Route 1: letter choice
 
 Next-movie **choice**: prompt = user's recent watch history (titles) + C=10
