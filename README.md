@@ -212,6 +212,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
 | SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
 | **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
+| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | **0.967** | **9.6%** | 100% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1368,9 +1369,42 @@ The likely cause is structural rather than a tuning miss: at $\alpha = 0.5$ half
 the loss is cross-entropy on the ground-truth labels, and **those labels are the
 popularity-skewed signal that created the bias** (held-out targets average 0.77
 popularity quantile). The debiased soft target is being cancelled by a biased
-hard target. That predicts the frontier is traced by $\alpha$, and since
-distillation runs at ~1.7 s/step — 7× faster than GRPO, because there is no
-generation — the sweep is cheap to run.
+hard target.
+
+**At 1.07 epochs the exposure bias finally moves.** Distillation runs at
+~1.7 s/step (7× faster than GRPO — no generation), so a real budget is
+affordable for the first time in this project. Same configuration, 2000 steps:
+
+| metric | SFT | best RL | distill 600 | **distill 2k** |
+|---|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | **2.33%** | 0.67% |
+| HR@10 ↑ | 7.67% | 7.33% | **8.67%** | 8.00% |
+| NDCG@10 ↑ | 0.0390 | 0.0384 | **0.0489** | 0.0366 |
+| pop_lift@1 ↓ | +0.483 | **+0.458** | +0.487 | +0.477 |
+| ΔGAP ↓ | +0.188 | **+0.163** | +0.192 | +0.182 |
+| exposure Gini ↓ | 0.972 | 0.974 | 0.975 | **0.967** |
+| coverage@10 ↑ | 7.4% | 6.5% | 7.1% | **9.6%** |
+
+**coverage@10 9.6% (+30% relative over SFT) and Gini 0.967 are the best
+exposure numbers in this repo**, and ΔGAP +0.182 is the first SDA-family run
+below the SFT baseline. Twelve prior stage-2 runs made exposure *worse*.
+
+It is paid for in rank-1 accuracy: HR@1 collapses 2.33% → 0.67% while HR@**10**
+holds at 8.00% — the model still finds the target within ten, it just stops
+putting it first. That is the signature of a flattened output distribution,
+which is exactly what the objective requested.
+
+So the two arms are two points on a frontier, not a better/worse pair: 600
+steps is the accuracy corner, 2000 the exposure corner. Budget was a real
+constraint — 3.3× the steps produced the first genuine exposure improvement
+here, where twelve RL runs at 0.32 epochs produced none.
+
+Two caveats. The *popularity* metrics (pop_lift +0.477, ΔGAP +0.182) are better
+than SFT but still behind the one-line popularity tax (+0.458 / +0.163) — the
+exposure term targets concentration directly, and nothing in this loss targets
+per-user popularity anchoring as sharply as the user-anchored tax does. And
+mid/tail HR are 0% in both arms: coverage rose because more distinct
+head-adjacent items get recommended, not because the tail became reachable.
 
 ### Proposed: dense reward (designed, not yet run)
 
