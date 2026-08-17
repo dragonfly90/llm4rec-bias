@@ -211,6 +211,7 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
 | SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
 | SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
+| **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1305,6 +1306,71 @@ from 4 samples, and 12/12 groups were measured to have all-distinct wrong
 items); then temperature ≥ 1.2, which is what would put rare items in the
 rollouts for the reward to reweight at all. β is settled and needs no further
 runs.
+
+### 5d. Dropping the reward entirely: SDA as distillation
+
+If the objective is $D_{\mathrm{KL}}(P^{*}\|Q_\theta)$, the reward $P^{*}/Q_\theta$
+is only one way to estimate its gradient — and two measurements say it is a bad
+one here. GRPO divides advantages by each group's std, discarding the *magnitude*
+that carries a forward KL's entire mass-covering signal; and the estimator draws
+from $Q_\theta$ while the dominant terms are those with $Q_\theta \to 0$, which
+at Gini 0.97 are never sampled. But the same gradient has a second estimator:
+
+$$\mathbb{E}_{s\sim Q_\theta}\!\left[\frac{P^{*}(s)}{Q_\theta(s)}\nabla\log Q_\theta(s)\right]
+= \mathbb{E}_{s\sim P^{*}}\big[\nabla\log Q_\theta(s)\big]$$
+
+Sample from the **target** instead of the policy: no importance ratio, no
+clipping, no advantage normalization, and tail items enter the gradient by
+construction. A KL to a known distribution over an enumerable output space is a
+distillation problem, and casting it as a reward costs the mechanism.
+[`sid_distill.py`](src/llm4rec/sid_distill.py) is that trainer — same pipeline
+slot as GRPO (merged SFT weights → fresh LoRA → adapter `sid_eval` scores), no
+rollouts, no rewards:
+
+$$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*})
+\;+\; (1-\alpha)\,\underset{i_m\sim \tilde P^{*}}{\mathrm{mean}}\ \mathrm{CE}(i_m)
+\;+\; \lambda\, D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
+
+The items are **sampled** from $\tilde P^{*}$, not taken top-M: truncating to the
+mode would re-concentrate the very spread the objective exists to transfer. The
+third term is the only loss in this repo that sees more than one example at a
+time — Gini and coverage are properties of the *pooled* recommendations across
+users, so a per-example objective can only reach them indirectly.
+
+**Result at matched budget** (600 steps × 2 prompts = 1200 prompts, the same
+count the 300-step GRPO runs saw):
+
+| metric | SFT | best RL (+pop w=1.0) | best SDA reward | **distill** |
+|---|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | 2.00% | **2.33%** |
+| HR@10 ↑ | 7.67% | 7.33% | 7.00% | **8.67%** |
+| NDCG@10 ↑ | 0.0390 | 0.0384 | 0.0396 | **0.0489** |
+| hr_ips@10 ↑ | 0.58% | **0.67%** | 0.49% | 0.64% |
+| validity ↑ | 94% | 100% | 98% | **100%** |
+| pop_lift@1 ↓ | **+0.483** | +0.458 | +0.491 | +0.487 |
+| ΔGAP ↓ | +0.188 | **+0.163** | +0.196 | +0.192 |
+| Gini ↓ | **0.972** | 0.974 | 0.981 | 0.975 |
+| coverage@10 ↑ | **7.4%** | 6.5% | 6.0% | 7.1% |
+
+**On accuracy this is the first thing in the project that works.** HR@10 8.67%
+and NDCG 0.0489 are the best numbers here, and it is the **first stage-2 method
+of any kind to beat the SFT baseline** — all eleven RL checkpoints came in below
+SFT's 7.67%. It also repairs the exposure damage RL caused (Gini 0.975 and
+coverage 7.1%, versus 0.979–0.981 and 6.0–6.4%).
+
+**On bias it changes nothing.** ΔGAP +0.192 and pop_lift +0.487 are
+indistinguishable from the reward-based runs and still marginally worse than not
+training at all. Training against a target measured at ΔGAP **+0.023** produced a
+policy at **+0.192**, and per-tier HR is head 12.3% / mid 0% / tail 0% — the
+gain is entirely head.
+
+The likely cause is structural rather than a tuning miss: at $\alpha = 0.5$ half
+the loss is cross-entropy on the ground-truth labels, and **those labels are the
+popularity-skewed signal that created the bias** (held-out targets average 0.77
+popularity quantile). The debiased soft target is being cancelled by a biased
+hard target. That predicts the frontier is traced by $\alpha$, and since
+distillation runs at ~1.7 s/step — 7× faster than GRPO, because there is no
+generation — the sweep is cheap to run.
 
 ### Proposed: dense reward (designed, not yet run)
 
