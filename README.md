@@ -29,24 +29,51 @@ tables are in [Route 2](#route-2-semantic-id-generative-retrieval).
 **1. No reward design moved the bias.** Seven configurations — prefix credit,
 the MiniOneRec rank-aware hybrid, catalog and user-anchored popularity taxes, a
 propensity-weighted rare-hit bonus, and SDA in two forms — land in
-ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188. The one that helped,
-barely, is the crudest: a flat popularity penalty at w=1.0 (+0.163).
+ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188, where
+
+$$\Delta\mathrm{GAP} = \frac{1}{N}\sum_u\Big(q(\hat\imath_u) - \tfrac{1}{|H_u|}\textstyle\sum_{j\in H_u} q(j)\Big)$$
+
+The one that helped, barely, is the crudest — a flat popularity penalty
+$P(i_k) = -[\,q(i_k)-\bar q_\mathcal{C}\,]_+$ at $w=1.0$ (+0.163). The
+propensity-weighted rare-hit bonus never fired at all
+(`bonus/rare_hit_mean` ≈ 0.0004).
 
 **2. β is not the binding constraint, contrary to what this README argued at
-length.** A 4× looser KL leash changed mean KL by **1.07×** and ΔGAP by
-**0.0003**. At β=0.04 the penalty contributes ~0.002 against advantage-weighted
-terms of order 1. What actually binds is the optimization budget: 300 steps ×
-4 prompts is **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
+length.** The claim under test was that the regularizer in
+
+$$\mathcal{L} = -\mathbb{E}\big[A\cdot\log\pi\big] + \beta\,D_{\mathrm{KL}}\big(\pi\,\|\,\pi_{\mathrm{SFT}}\big)$$
+
+holds the policy where the bias already is. A 4× looser leash changed mean KL by
+**1.07×** (0.0213 → 0.0228) and ΔGAP by **0.0003**. At β=0.04 the penalty
+contributes $\beta D \approx 0.04\times0.05 = 0.002$ against advantage-weighted
+terms of order $|A|\approx 1$. What actually binds is the optimization budget:
+$300 \times 4 / 3724 =$ **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
 
 **3. Pointing the objective at an unbiased target does not make the policy
-unbiased.** A propensity-debiased transition model reaches ΔGAP **+0.023**;
-GRPO against it produced a policy at **+0.191**. Across five configurations the
-objective's ΔGAP spans 0.149 while the policy's spans 0.033.
+unbiased.** Debiasing the target directly,
 
-**4. The reward *formulation* was the problem, not the objective.** SDA's
-target and KL, with only the gradient estimator changed — sampling from the
-target instead of from the policy with an importance ratio — gives the first
-stage-2 method to beat SFT on anything:
+$$\tilde P^{*}(i) = \frac{P^{*}(i)\,/\,c(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j)\,/\,c(j)^{\gamma}}, \qquad \gamma = 0.3$$
+
+reaches ΔGAP **+0.023** at the target. GRPO against it produced a policy at
+**+0.191**. Across five configurations the objective's ΔGAP spans **0.149**
+while the policy's spans **0.033**.
+
+**4. The reward *formulation* was the problem, not the objective.** The SDA
+objective factors along the SID hierarchy, so the KL chain rule splits it with
+no hand-set per-level weights:
+
+$$P^{*}(C_1,C_2,C_3)=P^{*}(C_1)P^{*}(C_2|C_1)P^{*}(C_3|C_1,C_2)
+\;\Rightarrow\;
+\mathcal{L}_{\mathrm{SDA}} = D_1 + D_{2|1} + D_{3|12}$$
+
+Its gradient has **two** estimators, and the repo used the worse one:
+
+$$-\nabla_\theta D_{\mathrm{KL}}(P^{*}\|Q_\theta)
+= \underbrace{\mathbb{E}_{s\sim Q_\theta}\!\left[\frac{P^{*}(s)}{Q_\theta(s)}\nabla_\theta\log Q_\theta(s)\right]}_{\text{the reward } R_{\mathrm{SDA}} = P^{*}/Q_\theta}
+= \underbrace{\mathbb{E}_{s\sim P^{*}}\big[\nabla_\theta\log Q_\theta(s)\big]}_{\text{plain cross-entropy}}$$
+
+Switching to the right-hand estimator gives the first stage-2 method to beat SFT
+on anything:
 
 | | HR@10 | NDCG@10 | Gini ↓ | coverage@10 ↑ |
 |---|---|---|---|---|
@@ -55,15 +82,51 @@ stage-2 method to beat SFT on anything:
 | distillation, matched budget | **8.67%** | **0.0489** | 0.975 | 7.1% |
 | distillation, 1.07 epochs | 8.00% | 0.0366 | **0.967** | **9.6%** |
 
-Why: GRPO divides advantages by each group's std, discarding the magnitudes
-that carry a forward KL's mass-covering signal, and it samples from $Q_\theta$
-while the dominant terms are those with $Q_\theta\to0$ — never drawn at Gini
-0.97. Both are structural, not tuning.
+Why the reward form fails, in two structural steps. A forward KL fights
+concentration through *unbounded* ratios — but GRPO divides them away, and with
+$G=4$ a group z-score cannot even exceed 1.5:
 
-**5. Nothing moved the tail.** mid/tail HR@10 is **0% in every one of the
-thirteen runs** (n = 73/15). Coverage improves by recommending more distinct
-head-adjacent items, not by reaching the tail. That is a capacity floor for a
-0.5B model over 1,682 items, and no loss or reward design reaches it.
+$$A_k=\frac{R_k-\mu_G}{\sigma_G+10^{-4}}, \qquad |z| \le \frac{G-1}{\sqrt G} = 1.5$$
+
+And the terms that dominate a forward KL are exactly the ones on-policy
+sampling never draws:
+
+$$D_{\mathrm{KL}}(P^{*}\|Q_\theta)\to\infty \ \text{ as } Q_\theta(s)\to0,
+\qquad \Pr[\,s \text{ drawn}\,]=Q_\theta(s)\to0$$
+
+At Gini 0.97 the policy samples ~100 of 1,682 items, so the coverage term is
+absent from every gradient estimate. Both obstacles are structural, not tuning.
+The loss form actually run:
+
+$$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*}) + (1-\alpha)\!\!\underset{i_m\sim\tilde P^{*}}{\mathrm{mean}}\!\mathrm{CE}(i_m) + \lambda\,D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
+
+⚠️ **Attribution caveat.** The distillation runs also differ in learning rate
+(2e-5 vs 5e-6) and add the α and λ terms, so this experiment does **not**
+isolate the estimator as the cause of the numbers. The mechanism argument above
+is verified in the trl source and the training logs; the causal claim is not.
+The missing control is `--alpha 1.0 --lambda-exp 0` at lr 2e-5 — pure label CE,
+no distillation target — which would show how much of the gain is simply more
+training at a higher lr.
+
+**5. Nothing moved the tail.** With
+
+$$\mathrm{HR}_T@K = \underset{u\,:\,i^{*}_u\in T}{\mathrm{mean}}\ \mathbf{1}\big[i^{*}_u\in\mathrm{top}K(u)\big]$$
+
+mid/tail HR@10 is **0% in every one of the thirteen runs** (n = 73/15), and
+IPS-corrected HR@10 is 0.58% against a raw 7.67%. Coverage improves by
+recommending more distinct head-adjacent items, not by reaching the tail — and
+the two exposure metrics decompose to show it. If $k$ items shared exposure
+perfectly equally, Gini would be exactly $1-k/|\mathcal{I}|$, so coverage sets a
+floor on Gini and the remainder is inequality *among the items actually shown*:
+
+| | coverage-implied floor | measured Gini | excess |
+|---|---|---|---|
+| SFT | 0.926 | 0.972 | 0.046 |
+| distill 2k | 0.904 | 0.967 | **0.063** |
+
+So the best exposure result in this repo reaches ~37 more movies while
+distributing *more* unevenly across the ones it shows. That is a capacity floor
+for a 0.5B model over 1,682 items, and no loss or reward design reaches it.
 
 **Reading the table:** the best accuracy and the best exposure numbers come
 from *different* checkpoints of the same method, and the best popularity
