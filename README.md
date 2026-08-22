@@ -20,11 +20,18 @@ Two task routes are implemented:
 
 ## Findings
 
-Thirteen stage-2 checkpoints on the semantic-ID route — seven reward designs
-under GRPO, a KL-strength test, and two runs of a reward-free distillation
-trainer. All start from the same SFT checkpoint and are scored the same way
-(300 test users, constrained-beam retrieval over 1,682 items). Details and
-tables are in [Route 2](#route-2-semantic-id-generative-retrieval).
+Nineteen stage-2 checkpoints on the semantic-ID route — reward designs under
+GRPO, a KL-strength test, LoRA-capacity runs, seed replicates, and four runs of
+a reward-free distillation trainer. All start from the same SFT checkpoint and
+are scored the same way (300 test users, constrained-beam retrieval over 1,682
+items). Details and tables are in
+[Route 2](#route-2-semantic-id-generative-retrieval).
+
+> **Scope note.** An earlier version of this section surveyed only the r=16
+> reward-design runs and generalized from them. The `r64` / `r64tok`
+> checkpoints (LoRA rank 64) and the `w1_s1` / `w1_s2` seed replicates were
+> already in `runs/` and are now included; two findings changed materially as a
+> result, and are marked below.
 
 **1. No reward design moved the bias.** Seven configurations — prefix credit,
 the MiniOneRec rank-aware hybrid, catalog and user-anchored popularity taxes, a
@@ -37,6 +44,13 @@ The one that helped, barely, is the crudest — a flat popularity penalty
 $P(i_k) = -[\,q(i_k)-\bar q_\mathcal{C}\,]_+$ at $w=1.0$ (+0.163). The
 propensity-weighted rare-hit bonus never fired at all
 (`bonus/rare_hit_mean` ≈ 0.0004).
+
+⚠️ **That +0.163 is the best of three seeds, not a stable effect.** The same
+configuration re-run gives **+0.163 / +0.182 / +0.186** (`pop_w1`, `w1_s1`,
+`w1_s2`), straddling the SFT baseline of +0.188. Earlier revisions of this
+document cited +0.163 as a fixed reference point in several comparisons; it
+should be read as +0.18 ± 0.01 across seeds. Almost none of the differences
+among the reward designs survive that spread.
 
 **2. β is not the binding constraint, contrary to what this README argued at
 length.** The claim under test was that the regularizer in
@@ -55,8 +69,29 @@ unbiased.** Debiasing the target directly,
 $$\tilde P^{*}(i) = \frac{P^{*}(i)\,/\,c(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j)\,/\,c(j)^{\gamma}}, \qquad \gamma = 0.3$$
 
 reaches ΔGAP **+0.023** at the target. GRPO against it produced a policy at
-**+0.191**. Across five configurations the objective's ΔGAP spans **0.149**
-while the policy's spans **0.033**.
+**+0.191**.
+
+**The sharp version of this, corrected.** An earlier revision claimed "the
+objective's ΔGAP spans 0.149 while the policy's spans 0.033," comparing the
+target sweep against the reward-design runs only. Including every checkpoint in
+`runs/`, the policy's range is **0.316**, and the split is the interesting part:
+
+| what varies | ΔGAP range | span |
+|---|---|---|
+| **reward design** (7 configs, LoRA r=16) | +0.163 … +0.196 | **0.033** |
+| **model capacity** (`r64`, `r64tok`, LoRA r=64) | −0.120 … −0.102 | **0.31 from baseline** |
+
+Rank 64 at the *same* 300 steps and β=0.04 drove final KL to **0.97** (vs 0.05
+at r=16), entropy 1.45 → 0.48, and ΔGAP from +0.188 to **−0.120** — past neutral
+into under-recommending popular items. So the policy is not immovable, as the
+earlier framing implied; it is immovable *by reward design at r=16*. What moves
+it is capacity.
+
+That is not a success: r64's HR@10 collapses to **3.0%**, coverage to 2.6%,
+Gini to 0.992. It found a degenerate low-popularity mode, not a better
+trade-off. But it does relocate the constraint from "the reward" to "how much
+the policy is able and permitted to move," alongside the lr evidence in
+finding 2.
 
 **4. The reward *formulation* was the problem, not the objective.** The SDA
 objective factors along the SID hierarchy, so the KL chain rule splits it with
@@ -112,7 +147,10 @@ training at a higher lr.
 
 $$\mathrm{HR}_T@K = \underset{u\,:\,i^{*}_u\in T}{\mathrm{mean}}\ \mathbf{1}\big[i^{*}_u\in\mathrm{top}K(u)\big]$$
 
-mid/tail HR@10 is **0% in every one of the thirteen runs** (n = 73/15), and
+**tail** HR@10 is **0% in every run** (n = 15). **Mid**-tier is 0% in all but
+two — `r64` and `w1_s2` each hit exactly **1 of 73** mid targets (1.37%), which
+is one user, not a trend. (An earlier revision claimed 0% for mid *and* tail
+across all runs; that was checked only over the runs produced in that session.)
 IPS-corrected HR@10 is 0.58% against a raw 7.67%. Coverage improves by
 recommending more distinct head-adjacent items, not by reaching the tail — and
 the two exposure metrics decompose to show it. If $k$ items shared exposure
@@ -326,8 +364,14 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
 | SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
 | SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
+| +pop w=1.0, seed 1 | minionerec + pop w=1.0 | 1.0% | 7.3% | 0.036 | +0.481 | +0.186 | 0.976 | 6.6% | 100% |
+| +pop w=1.0, seed 2 | minionerec + pop w=1.0 | 1.0% | 7.3% | 0.036 | +0.477 | +0.182 | 0.976 | 6.7% | 100% |
+| **r64** | prefix, **LoRA r=64** | 0.3% | 3.0% | 0.013 | +0.174 | **−0.120** | 0.992 | 2.6% | 100% |
+| **r64 + sid tokens** | prefix, r=64, trainable sid rows | 0.0% | 3.3% | 0.013 | +0.192 | **−0.102** | 0.992 | 2.5% | 100% |
 | **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
-| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | **0.967** | **9.6%** | 100% |
+| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | 0.967 | 9.6% | 100% |
+| distill v2 600 | item-head teacher, 600 | 1.0% | 5.3% | 0.027 | +0.480 | +0.185 | 0.969 | 8.3% | 96% |
+| **distill v2 2k** | item-head teacher, 1.07 ep | 0.7% | 7.3% | 0.036 | +0.472 | +0.178 | **0.961** | **10.6%** | 100% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
