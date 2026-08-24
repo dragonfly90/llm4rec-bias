@@ -368,6 +368,36 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | +pop w=1.0, seed 2 | minionerec + pop w=1.0 | 1.0% | 7.3% | 0.036 | +0.477 | +0.182 | 0.976 | 6.7% | 100% |
 | **r64** | prefix, **LoRA r=64** | 0.3% | 3.0% | 0.013 | +0.174 | **−0.120** | 0.992 | 2.6% | 100% |
 | **r64 + sid tokens** | prefix, r=64, trainable sid rows | 0.0% | 3.3% | 0.013 | +0.192 | **−0.102** | 0.992 | 2.5% | 100% |
+
+**Non-LLM baselines on the identical 300 users.** None of these involve the
+language model at all; they are the reference the whole project should have been
+measured against from the start.
+
+| model | size | HR@1 | HR@10 | NDCG@10 | pop_lift@1 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|---|---|
+| popularity prior | — | 0.7% | 5.0% | 0.023 | +0.500 | +0.205 | 0.994 | 0.6% |
+| **last-item Markov** | ~2 lines | 1.0% | 9.3% | 0.042 | +0.411 | **+0.117** | **0.820** | **39.2%** |
+| T_φ v1 (code head) | 279K | **2.3%** | 8.0% | 0.044 | +0.467 | +0.172 | 0.974 | 8.6% |
+| **T_φ v2 (item head)** | 853K | 1.3% | **10.3%** | **0.050** | +0.421 | +0.127 | 0.914 | 20.2% |
+
+**The best model in this study is not the LLM.** An 853K-parameter MLP beats the
+fine-tuned 0.5B LLM by **35%** on HR@10 (10.3% vs 7.7%), and a two-line
+last-item co-occurrence table beats it by 22% *while posting the best bias
+numbers anywhere in the project* — ΔGAP **+0.117**, Gini **0.820**, coverage
+**39.2%**, five times the LLM's. Every LLM checkpoint here — 12 RL runs, 4
+distillation runs, SFT — ranks below both.
+
+That reframes everything above. The study's question was "can RL or distillation
+reduce popularity bias in an LLM recommender," but on this dataset at this scale
+the LLM route is beaten on accuracy *and* bias simultaneously by methods that
+take seconds to fit. The distillation result, the only method to beat SFT, is
+distilling *downward* from a teacher that already outperforms its student.
+
+The fair caveat: LLM recommenders are normally argued for on cold-start,
+cross-domain transfer and natural-language conditioning, none of which this
+benchmark measures. But within what is measured here, the LLM is not
+competitive — and that was never checked before 16 runs were spent improving
+it.
 | **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
 | **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | 0.967 | 9.6% | 100% |
 | distill v2 600 | item-head teacher, 600 | 1.0% | 5.3% | 0.027 | +0.480 | +0.185 | 0.969 | 8.3% | 96% |
