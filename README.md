@@ -402,6 +402,8 @@ it.
 | **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | 0.967 | 9.6% | 100% |
 | distill v2 600 | item-head teacher, 600 | 1.0% | 5.3% | 0.027 | +0.480 | +0.185 | 0.969 | 8.3% | 96% |
 | **distill v2 2k** | item-head teacher, 1.07 ep | 0.7% | 7.3% | 0.036 | +0.472 | +0.178 | **0.961** | **10.6%** | 100% |
+| GKD β=1.0 | exact JSD, on-policy 0.5 | 0.7% | 6.3% | 0.031 | +0.487 | +0.192 | 0.975 | 7.4% | 96% |
+| GKD β=0.0 | exact JSD, on-policy 0.5 | 1.7% | 5.3% | 0.032 | +0.487 | +0.197 | 0.976 | 6.5% | 96% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1587,6 +1589,54 @@ So the two arms are two points on a frontier, not a better/worse pair: 600
 steps is the accuracy corner, 2000 the exposure corner. Budget was a real
 constraint — 3.3× the steps produced the first genuine exposure improvement
 here, where twelve RL runs at 0.32 epochs produced none.
+
+### 5e. GKD rewrite — a regression
+
+The sampled loss above has a defect: its magnitude tracks the teacher's entropy,
+so α means something different per teacher (measured: ~1 nat shift at identical
+α, which made the v1/v2 teacher comparison uninterpretable).
+[GKD](https://arxiv.org/abs/2306.13649) generalizes the form, and our loss sat at
+exactly the corner that paper argues against — λ=0 (sample from the teacher) with
+forward KL. The generalized objective mixes on-policy data and interpolates the
+divergence:
+
+$$\mathcal{L}_{\mathrm{GKD}} = (1-\lambda)\,\mathbb{E}_{(x,y)\sim(X,Y)}\big[D(p_T\|p_S^\theta)\big]
++ \lambda\,\mathbb{E}_{x}\mathbb{E}_{y\sim p_S(\cdot|x)}\big[D(p_T\|p_S^\theta)\big]$$
+
+$$D_{\mathrm{JSD}(\beta)}(P\|Q) = \beta D_{\mathrm{KL}}\big(P\,\|\,\beta P + (1-\beta)Q\big)
++ (1-\beta) D_{\mathrm{KL}}\big(Q\,\|\,\beta P + (1-\beta)Q\big)$$
+
+with β→0 forward KL (mass-covering) and β→1 reverse KL (mode-seeking), and the
+divergence taken at each position over the **full** vocabulary:
+
+$$D(p_T\|p_S^\theta)(y|x) = \frac{1}{L_y}\sum_{n=1}^{L_y} D\big(p_T(\cdot|y_{<n},x)\,\|\,p_S^\theta(\cdot|y_{<n},x)\big)$$
+
+Our setting suits this unusually well: completions are 3 code tokens, so
+on-policy generation is nearly free, and the per-position vocabulary is 64 codes,
+so the full distribution is exactly computable — no truncation, no sampling.
+Implemented as `--loss exact --beta B --on-policy L`.
+
+**It did not work.** Both arms, 600 steps, λ=0.5, matched budget:
+
+| | HR@1 | HR@10 | NDCG@10 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|
+| SFT baseline | 1.33% | 7.67% | 0.0390 | +0.188 | 0.972 | 7.4% |
+| **sampled loss (old)** | **2.33%** | **8.67%** | **0.0489** | +0.192 | 0.975 | 7.1% |
+| GKD β=1.0 (mode-seeking) | 0.67% | 6.33% | 0.0307 | +0.192 | 0.975 | 7.4% |
+| GKD β=0.0 (mass-covering) | 1.67% | 5.33% | 0.0316 | +0.197 | 0.976 | 6.5% |
+
+Both fall below the loss they replaced *and* below doing no stage 2 at all, and
+β moved nothing on the bias axis (+0.192 vs +0.197). The β ordering on HR@10 is
+at least directionally consistent with the sharpness story — mode-seeking beats
+mass-covering, 6.33% vs 5.33% — but the 1pp gap is inside this project's
+run-to-run spread, so it is not evidence for anything.
+
+Two candidate explanations, untested: the exact divergence scores **one path**
+per prompt where the sampled loss scored 5 sequences, so there is far less
+signal per step; and half the steps score a student-sampled path, which early in
+training is close to random and may contribute noise rather than correction.
+Nothing here says GKD is wrong — it says this implementation of it, at this
+budget, is worse than the simpler thing, and I would not have predicted that.
 
 Two caveats. The *popularity* metrics (pop_lift +0.477, ΔGAP +0.182) are better
 than SFT but still behind the one-line popularity tax (+0.458 / +0.163) — the
