@@ -1524,6 +1524,43 @@ $$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*})
 \;+\; (1-\alpha)\,\underset{i_m\sim \tilde P^{*}}{\mathrm{mean}}\ \mathrm{CE}(i_m)
 \;+\; \lambda\, D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
 
+Written out, with nothing abbreviated — this is exactly what `distill 600` ran
+($\alpha = 0.5$, $M = 4$, $\gamma = 0.3$, $\lambda_{\exp} = 1.0$, $B = 4$ prompts,
+600 steps, lr 2e-5, seed 42, from merged SFT weights + a fresh LoRA r=16):
+
+$$
+\mathcal{L}(\theta) =
+\underbrace{\alpha\cdot\frac{1}{B}\sum_{u=1}^{B}\Big[-\log Q_\theta\big(i^{*}_u \mid H_u\big)\Big]}_{\text{ground-truth label}}
++ \underbrace{(1-\alpha)\cdot\frac{1}{B}\sum_{u=1}^{B}\frac{1}{M}\sum_{m=1}^{M}\Big[-\log Q_\theta\big(i^{(u)}_m \mid H_u\big)\Big]}_{\text{teacher},\; i^{(u)}_m \sim \tilde P^{*}(\cdot\mid H_u)}
++ \underbrace{\lambda_{\exp}\cdot D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)}_{\text{ensemble exposure}}
+$$
+
+where the student's item score is the sequence NLL over the four SID tokens,
+
+$$-\log Q_\theta(i\mid H) \;=\; -\sum_{l=1}^{4}\log Q_\theta\big(c_l(i)\;\big|\;H,\,c_{<l}(i)\big)$$
+
+the target is the propensity-debiased transition model, renormalized over the
+catalog,
+
+$$\tilde P^{*}(i\mid H) = \frac{P^{*}(i\mid H)\,/\,\mathrm{count}(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j\mid H)\,/\,\mathrm{count}(j)^{\gamma}},
+\qquad
+P^{*}(i\mid H) = \frac{P_\phi(c_1)\,P_\phi(c_2|c_1)\,P_\phi(c_3|c_1,c_2)}{\big|\{j:\mathrm{prefix}_3(j)=\mathrm{prefix}_3(i)\}\big|}$$
+
+and the exposure term compares batch-mean level-1 code distributions,
+
+$$\bar Q(C_1)=\frac{1}{B}\sum_{u} Q_\theta(C_1\mid H_u),
+\qquad
+\bar P^{*}(C_1)=\frac{1}{B}\sum_{u}\sum_{i\,:\,c_1(i)=C_1} \tilde P^{*}(i\mid H_u)$$
+
+**Read off the equation:** the first two terms are the *same functional*,
+$-\log Q_\theta(\cdot\mid H)$, evaluated at different items — the observed label
+in one, samples from $\tilde P^{*}$ in the other. So this is SFT with the label
+replaced by draws from a distribution, and $\alpha$ sets how much of each. Only
+the third term is structurally different, and it is the only one that couples
+examples within a batch. Setting $\alpha = 1$ recovers plain continued SFT
+exactly — which is the control in §5d-bis, and which turns out to account for
+two-thirds of this method's gain over SFT.
+
 The items are **sampled** from $\tilde P^{*}$, not taken top-M: truncating to the
 mode would re-concentrate the very spread the objective exists to transfer. The
 third term is the only loss in this repo that sees more than one example at a
