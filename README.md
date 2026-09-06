@@ -20,33 +20,95 @@ Two task routes are implemented:
 
 ## Findings
 
-Thirteen stage-2 checkpoints on the semantic-ID route — seven reward designs
-under GRPO, a KL-strength test, and two runs of a reward-free distillation
-trainer. All start from the same SFT checkpoint and are scored the same way
-(300 test users, constrained-beam retrieval over 1,682 items). Details and
-tables are in [Route 2](#route-2-semantic-id-generative-retrieval).
+Nineteen stage-2 checkpoints on the semantic-ID route — reward designs under
+GRPO, a KL-strength test, LoRA-capacity runs, seed replicates, and four runs of
+a reward-free distillation trainer. All start from the same SFT checkpoint and
+are scored the same way (300 test users, constrained-beam retrieval over 1,682
+items). Details and tables are in
+[Route 2](#route-2-semantic-id-generative-retrieval).
+
+> **Scope note.** An earlier version of this section surveyed only the r=16
+> reward-design runs and generalized from them. The `r64` / `r64tok`
+> checkpoints (LoRA rank 64) and the `w1_s1` / `w1_s2` seed replicates were
+> already in `runs/` and are now included; two findings changed materially as a
+> result, and are marked below.
 
 **1. No reward design moved the bias.** Seven configurations — prefix credit,
 the MiniOneRec rank-aware hybrid, catalog and user-anchored popularity taxes, a
 propensity-weighted rare-hit bonus, and SDA in two forms — land in
-ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188. The one that helped,
-barely, is the crudest: a flat popularity penalty at w=1.0 (+0.163).
+ΔGAP **+0.163 … +0.196** around an SFT baseline of +0.188, where
+
+$$\Delta\mathrm{GAP} = \frac{1}{N}\sum_u\Big(q(\hat\imath_u) - \tfrac{1}{|H_u|}\textstyle\sum_{j\in H_u} q(j)\Big)$$
+
+The one that helped, barely, is the crudest — a flat popularity penalty
+$P(i_k) = -[\,q(i_k)-\bar q_\mathcal{C}\,]_+$ at $w=1.0$ (+0.163). The
+propensity-weighted rare-hit bonus never fired at all
+(`bonus/rare_hit_mean` ≈ 0.0004).
+
+⚠️ **That +0.163 is the best of three seeds, not a stable effect.** The same
+configuration re-run gives **+0.163 / +0.182 / +0.186** (`pop_w1`, `w1_s1`,
+`w1_s2`), straddling the SFT baseline of +0.188. Earlier revisions of this
+document cited +0.163 as a fixed reference point in several comparisons; it
+should be read as +0.18 ± 0.01 across seeds. Almost none of the differences
+among the reward designs survive that spread.
 
 **2. β is not the binding constraint, contrary to what this README argued at
-length.** A 4× looser KL leash changed mean KL by **1.07×** and ΔGAP by
-**0.0003**. At β=0.04 the penalty contributes ~0.002 against advantage-weighted
-terms of order 1. What actually binds is the optimization budget: 300 steps ×
-4 prompts is **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
+length.** The claim under test was that the regularizer in
+
+$$\mathcal{L} = -\mathbb{E}\big[A\cdot\log\pi\big] + \beta\,D_{\mathrm{KL}}\big(\pi\,\|\,\pi_{\mathrm{SFT}}\big)$$
+
+holds the policy where the bias already is. A 4× looser leash changed mean KL by
+**1.07×** (0.0213 → 0.0228) and ΔGAP by **0.0003**. At β=0.04 the penalty
+contributes $\beta D \approx 0.04\times0.05 = 0.002$ against advantage-weighted
+terms of order $|A|\approx 1$. What actually binds is the optimization budget:
+$300 \times 4 / 3724 =$ **0.32 epochs** at lr 5e-6. Raising lr 4× moved KL 6×.
 
 **3. Pointing the objective at an unbiased target does not make the policy
-unbiased.** A propensity-debiased transition model reaches ΔGAP **+0.023**;
-GRPO against it produced a policy at **+0.191**. Across five configurations the
-objective's ΔGAP spans 0.149 while the policy's spans 0.033.
+unbiased.** Debiasing the target directly,
 
-**4. The reward *formulation* was the problem, not the objective.** SDA's
-target and KL, with only the gradient estimator changed — sampling from the
-target instead of from the policy with an importance ratio — gives the first
-stage-2 method to beat SFT on anything:
+$$\tilde P^{*}(i) = \frac{P^{*}(i)\,/\,c(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j)\,/\,c(j)^{\gamma}}, \qquad \gamma = 0.3$$
+
+reaches ΔGAP **+0.023** at the target. GRPO against it produced a policy at
+**+0.191**.
+
+**The sharp version of this, corrected.** An earlier revision claimed "the
+objective's ΔGAP spans 0.149 while the policy's spans 0.033," comparing the
+target sweep against the reward-design runs only. Including every checkpoint in
+`runs/`, the policy's range is **0.316**, and the split is the interesting part:
+
+| what varies | ΔGAP range | span |
+|---|---|---|
+| **reward design** (7 configs, LoRA r=16) | +0.163 … +0.196 | **0.033** |
+| **model capacity** (`r64`, `r64tok`, LoRA r=64) | −0.120 … −0.102 | **0.31 from baseline** |
+
+Rank 64 at the *same* 300 steps and β=0.04 drove final KL to **0.97** (vs 0.05
+at r=16), entropy 1.45 → 0.48, and ΔGAP from +0.188 to **−0.120** — past neutral
+into under-recommending popular items. So the policy is not immovable, as the
+earlier framing implied; it is immovable *by reward design at r=16*. What moves
+it is capacity.
+
+That is not a success: r64's HR@10 collapses to **3.0%**, coverage to 2.6%,
+Gini to 0.992. It found a degenerate low-popularity mode, not a better
+trade-off. But it does relocate the constraint from "the reward" to "how much
+the policy is able and permitted to move," alongside the lr evidence in
+finding 2.
+
+**4. The reward *formulation* was the problem, not the objective.** The SDA
+objective factors along the SID hierarchy, so the KL chain rule splits it with
+no hand-set per-level weights:
+
+$$P^{*}(C_1,C_2,C_3)=P^{*}(C_1)P^{*}(C_2|C_1)P^{*}(C_3|C_1,C_2)
+\;\Rightarrow\;
+\mathcal{L}_{\mathrm{SDA}} = D_1 + D_{2|1} + D_{3|12}$$
+
+Its gradient has **two** estimators, and the repo used the worse one:
+
+$$-\nabla_\theta D_{\mathrm{KL}}(P^{*}\|Q_\theta)
+= \underbrace{\mathbb{E}_{s\sim Q_\theta}\!\left[\frac{P^{*}(s)}{Q_\theta(s)}\nabla_\theta\log Q_\theta(s)\right]}_{\text{the reward } R_{\mathrm{SDA}} = P^{*}/Q_\theta}
+= \underbrace{\mathbb{E}_{s\sim P^{*}}\big[\nabla_\theta\log Q_\theta(s)\big]}_{\text{plain cross-entropy}}$$
+
+Switching to the right-hand estimator gives the first stage-2 method to beat SFT
+on anything:
 
 | | HR@10 | NDCG@10 | Gini ↓ | coverage@10 ↑ |
 |---|---|---|---|---|
@@ -55,15 +117,54 @@ stage-2 method to beat SFT on anything:
 | distillation, matched budget | **8.67%** | **0.0489** | 0.975 | 7.1% |
 | distillation, 1.07 epochs | 8.00% | 0.0366 | **0.967** | **9.6%** |
 
-Why: GRPO divides advantages by each group's std, discarding the magnitudes
-that carry a forward KL's mass-covering signal, and it samples from $Q_\theta$
-while the dominant terms are those with $Q_\theta\to0$ — never drawn at Gini
-0.97. Both are structural, not tuning.
+Why the reward form fails, in two structural steps. A forward KL fights
+concentration through *unbounded* ratios — but GRPO divides them away, and with
+$G=4$ a group z-score cannot even exceed 1.5:
 
-**5. Nothing moved the tail.** mid/tail HR@10 is **0% in every one of the
-thirteen runs** (n = 73/15). Coverage improves by recommending more distinct
-head-adjacent items, not by reaching the tail. That is a capacity floor for a
-0.5B model over 1,682 items, and no loss or reward design reaches it.
+$$A_k=\frac{R_k-\mu_G}{\sigma_G+10^{-4}}, \qquad |z| \le \frac{G-1}{\sqrt G} = 1.5$$
+
+And the terms that dominate a forward KL are exactly the ones on-policy
+sampling never draws:
+
+$$D_{\mathrm{KL}}(P^{*}\|Q_\theta)\to\infty \ \text{ as } Q_\theta(s)\to0,
+\qquad \Pr[\,s \text{ drawn}\,]=Q_\theta(s)\to0$$
+
+At Gini 0.97 the policy samples ~100 of 1,682 items, so the coverage term is
+absent from every gradient estimate. Both obstacles are structural, not tuning.
+The loss form actually run:
+
+$$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*}) + (1-\alpha)\!\!\underset{i_m\sim\tilde P^{*}}{\mathrm{mean}}\!\mathrm{CE}(i_m) + \lambda\,D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
+
+⚠️ **Attribution caveat.** The distillation runs also differ in learning rate
+(2e-5 vs 5e-6) and add the α and λ terms, so this experiment does **not**
+isolate the estimator as the cause of the numbers. The mechanism argument above
+is verified in the trl source and the training logs; the causal claim is not.
+The missing control is `--alpha 1.0 --lambda-exp 0` at lr 2e-5 — pure label CE,
+no distillation target — which would show how much of the gain is simply more
+training at a higher lr.
+
+**5. Nothing moved the tail.** With
+
+$$\mathrm{HR}_T@K = \underset{u\,:\,i^{*}_u\in T}{\mathrm{mean}}\ \mathbf{1}\big[i^{*}_u\in\mathrm{top}K(u)\big]$$
+
+**tail** HR@10 is **0% in every run** (n = 15). **Mid**-tier is 0% in all but
+two — `r64` and `w1_s2` each hit exactly **1 of 73** mid targets (1.37%), which
+is one user, not a trend. (An earlier revision claimed 0% for mid *and* tail
+across all runs; that was checked only over the runs produced in that session.)
+IPS-corrected HR@10 is 0.58% against a raw 7.67%. Coverage improves by
+recommending more distinct head-adjacent items, not by reaching the tail — and
+the two exposure metrics decompose to show it. If $k$ items shared exposure
+perfectly equally, Gini would be exactly $1-k/|\mathcal{I}|$, so coverage sets a
+floor on Gini and the remainder is inequality *among the items actually shown*:
+
+| | coverage-implied floor | measured Gini | excess |
+|---|---|---|---|
+| SFT | 0.926 | 0.972 | 0.046 |
+| distill 2k | 0.904 | 0.967 | **0.063** |
+
+So the best exposure result in this repo reaches ~37 more movies while
+distributing *more* unevenly across the ones it shows. That is a capacity floor
+for a 0.5B model over 1,682 items, and no loss or reward design reaches it.
 
 **Reading the table:** the best accuracy and the best exposure numbers come
 from *different* checkpoints of the same method, and the best popularity
@@ -263,8 +364,47 @@ is the same for the single top pick. Blank cells = metric added after that run;
 | SDA + pop | sda + pop w=1.0 | 1.0% | 7.3% | 0.037 | +0.489 | +0.195 | 0.980 | 6.3% | 96% |
 | SDA v2 | sda γ=0.3, standardized | 1.0% | 7.0% | 0.036 | +0.486 | +0.191 | 0.979 | 6.2% | 98% |
 | SDA v2, β=0.01 | sda γ=0.3, β=0.01 | 1.0% | 6.0% | 0.032 | +0.486 | +0.192 | 0.979 | 6.2% | 98% |
+| +pop w=1.0, seed 1 | minionerec + pop w=1.0 | 1.0% | 7.3% | 0.036 | +0.481 | +0.186 | 0.976 | 6.6% | 100% |
+| +pop w=1.0, seed 2 | minionerec + pop w=1.0 | 1.0% | 7.3% | 0.036 | +0.477 | +0.182 | 0.976 | 6.7% | 100% |
+| **r64** | prefix, **LoRA r=64** | 0.3% | 3.0% | 0.013 | +0.174 | **−0.120** | 0.992 | 2.6% | 100% |
+| **r64 + sid tokens** | prefix, r=64, trainable sid rows | 0.0% | 3.3% | 0.013 | +0.192 | **−0.102** | 0.992 | 2.5% | 100% |
+
+**Non-LLM baselines on the identical 300 users.** None of these involve the
+language model at all; they are the reference the whole project should have been
+measured against from the start.
+
+| model | size | HR@1 | HR@10 | NDCG@10 | pop_lift@1 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|---|---|
+| popularity prior | — | 0.7% | 5.0% | 0.023 | +0.500 | +0.205 | 0.994 | 0.6% |
+| **last-item Markov** | ~2 lines | 1.0% | 9.3% | 0.042 | +0.411 | **+0.117** | **0.820** | **39.2%** |
+| T_φ v1 (code head) | 279K | **2.3%** | 8.0% | 0.044 | +0.467 | +0.172 | 0.974 | 8.6% |
+| **T_φ v2 (item head)** | 853K | 1.3% | **10.3%** | **0.050** | +0.421 | +0.127 | 0.914 | 20.2% |
+
+**The best model in this study is not the LLM.** An 853K-parameter MLP beats the
+fine-tuned 0.5B LLM by **35%** on HR@10 (10.3% vs 7.7%), and a two-line
+last-item co-occurrence table beats it by 22% *while posting the best bias
+numbers anywhere in the project* — ΔGAP **+0.117**, Gini **0.820**, coverage
+**39.2%**, five times the LLM's. Every LLM checkpoint here — 12 RL runs, 4
+distillation runs, SFT — ranks below both.
+
+That reframes everything above. The study's question was "can RL or distillation
+reduce popularity bias in an LLM recommender," but on this dataset at this scale
+the LLM route is beaten on accuracy *and* bias simultaneously by methods that
+take seconds to fit. The distillation result, the only method to beat SFT, is
+distilling *downward* from a teacher that already outperforms its student.
+
+The fair caveat: LLM recommenders are normally argued for on cold-start,
+cross-domain transfer and natural-language conditioning, none of which this
+benchmark measures. But within what is measured here, the LLM is not
+competitive — and that was never checked before 16 runs were spent improving
+it.
 | **distill 600** | no reward — KL loss, γ=0.3, α=0.5 | **2.3%** | **8.7%** | **0.049** | +0.487 | +0.192 | 0.975 | 7.1% | 100% |
-| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | **0.967** | **9.6%** | 100% |
+| **distill 2k** | same, 1.07 epochs | 0.7% | 8.0% | 0.037 | +0.477 | +0.182 | 0.967 | 9.6% | 100% |
+| distill v2 600 | item-head teacher, 600 | 1.0% | 5.3% | 0.027 | +0.480 | +0.185 | 0.969 | 8.3% | 96% |
+| **distill v2 2k** | item-head teacher, 1.07 ep | 0.7% | 7.3% | 0.036 | +0.472 | +0.178 | **0.961** | **10.6%** | 100% |
+| GKD β=1.0 | exact JSD, on-policy 0.5 | 0.7% | 6.3% | 0.031 | +0.487 | +0.192 | 0.975 | 7.4% | 96% |
+| GKD β=0.0 | exact JSD, on-policy 0.5 | 1.7% | 5.3% | 0.032 | +0.487 | +0.197 | 0.976 | 6.5% | 96% |
+| **control: no teacher** | plain continued SFT | 1.7% | 8.3% | 0.041 | +0.482 | **+0.187** | **0.971** | 8.2% | 98% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1384,6 +1524,43 @@ $$\mathcal{L} = \alpha\,\mathrm{CE}(i^{*})
 \;+\; (1-\alpha)\,\underset{i_m\sim \tilde P^{*}}{\mathrm{mean}}\ \mathrm{CE}(i_m)
 \;+\; \lambda\, D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)$$
 
+Written out, with nothing abbreviated — this is exactly what `distill 600` ran
+($\alpha = 0.5$, $M = 4$, $\gamma = 0.3$, $\lambda_{\exp} = 1.0$, $B = 4$ prompts,
+600 steps, lr 2e-5, seed 42, from merged SFT weights + a fresh LoRA r=16):
+
+$$
+\mathcal{L}(\theta) =
+\underbrace{\alpha\cdot\frac{1}{B}\sum_{u=1}^{B}\Big[-\log Q_\theta\big(i^{*}_u \mid H_u\big)\Big]}_{\text{ground-truth label}}
++ \underbrace{(1-\alpha)\cdot\frac{1}{B}\sum_{u=1}^{B}\frac{1}{M}\sum_{m=1}^{M}\Big[-\log Q_\theta\big(i^{(u)}_m \mid H_u\big)\Big]}_{\text{teacher},\; i^{(u)}_m \sim \tilde P^{*}(\cdot\mid H_u)}
++ \underbrace{\lambda_{\exp}\cdot D_{\mathrm{KL}}\big(\bar Q(C_1)\,\|\,\bar P^{*}(C_1)\big)}_{\text{ensemble exposure}}
+$$
+
+where the student's item score is the sequence NLL over the four SID tokens,
+
+$$-\log Q_\theta(i\mid H) \;=\; -\sum_{l=1}^{4}\log Q_\theta\big(c_l(i)\;\big|\;H,\,c_{<l}(i)\big)$$
+
+the target is the propensity-debiased transition model, renormalized over the
+catalog,
+
+$$\tilde P^{*}(i\mid H) = \frac{P^{*}(i\mid H)\,/\,\mathrm{count}(i)^{\gamma}}{\sum_{j\in\mathcal{I}} P^{*}(j\mid H)\,/\,\mathrm{count}(j)^{\gamma}},
+\qquad
+P^{*}(i\mid H) = \frac{P_\phi(c_1)\,P_\phi(c_2|c_1)\,P_\phi(c_3|c_1,c_2)}{\big|\{j:\mathrm{prefix}_3(j)=\mathrm{prefix}_3(i)\}\big|}$$
+
+and the exposure term compares batch-mean level-1 code distributions,
+
+$$\bar Q(C_1)=\frac{1}{B}\sum_{u} Q_\theta(C_1\mid H_u),
+\qquad
+\bar P^{*}(C_1)=\frac{1}{B}\sum_{u}\sum_{i\,:\,c_1(i)=C_1} \tilde P^{*}(i\mid H_u)$$
+
+**Read off the equation:** the first two terms are the *same functional*,
+$-\log Q_\theta(\cdot\mid H)$, evaluated at different items — the observed label
+in one, samples from $\tilde P^{*}$ in the other. So this is SFT with the label
+replaced by draws from a distribution, and $\alpha$ sets how much of each. Only
+the third term is structurally different, and it is the only one that couples
+examples within a batch. Setting $\alpha = 1$ recovers plain continued SFT
+exactly — which is the control in §5d-bis, and which turns out to account for
+two-thirds of this method's gain over SFT.
+
 The items are **sampled** from $\tilde P^{*}$, not taken top-M: truncating to the
 mode would re-concentrate the very spread the objective exists to transfer. The
 third term is the only loss in this repo that sees more than one example at a
@@ -1450,6 +1627,94 @@ So the two arms are two points on a frontier, not a better/worse pair: 600
 steps is the accuracy corner, 2000 the exposure corner. Budget was a real
 constraint — 3.3× the steps produced the first genuine exposure improvement
 here, where twelve RL runs at 0.32 epochs produced none.
+
+### 5d-bis. The control: the teacher contributes almost nothing
+
+`distill 600` was the project's best LLM checkpoint and the only stage-2 method
+to beat SFT, so the obvious control is: **run it with the teacher switched off**
+(`--soft-weight 0 --lambda-exp 0`), leaving plain continued supervised training
+at the same lr, batch and step count. If that alone beats SFT, "distillation
+beats RL" is really "more SFT beats RL".
+
+| metric | SFT (stage 1) | **control** (no teacher) | distill 600 (with teacher) |
+|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | **2.33%** |
+| HR@10 ↑ | 7.67% | **8.33%** | **8.67%** |
+| NDCG@10 ↑ | 0.0390 | 0.0411 | **0.0489** |
+| **hr_ips@10** ↑ | 0.58% | **0.84%** | 0.64% |
+| ΔGAP ↓ | +0.188 | **+0.187** | +0.192 |
+| Gini ↓ | 0.972 | **0.971** | 0.975 |
+| coverage@10 ↑ | 7.4% | **8.2%** | 7.1% |
+
+**The control captures most of the gain.** Continued SFT with no teacher, no
+target distribution and no exposure term reaches HR@10 **8.33%**, against the
+full method's 8.67% and SFT's 7.67%. The teacher's entire marginal contribution
+is **+0.34pp HR@10** — far inside this project's run-to-run spread.
+
+**And on bias the control is *better*.** ΔGAP +0.187 vs +0.192, Gini 0.971 vs
+0.975, coverage 8.2% vs 7.1%, and `hr_ips@10` **0.84%** — the highest
+IPS-corrected accuracy anywhere in this repo, beating the previous best (0.67%,
+the popularity tax) and beating the teacher-trained student by 31%.
+
+So the honest reading of §5d changes. What beat SFT was **more supervised
+training**, not distribution alignment. The teacher buys a little top-1 accuracy
+(HR@1 2.33% vs 1.67%, NDCG 0.049 vs 0.041) and pays for it on every bias metric
+— which is the same trade every other intervention here makes, not a new
+capability. The SDA target, the debiasing, the exposure term and the whole
+reward-vs-loss argument are, on this evidence, worth ~0.3pp of HR@10 that a
+seed change could produce on its own.
+
+This control should have been run before the four distillation runs, not after
+them. It was named as the missing control when the trainer was written and then
+not executed for another dozen commits.
+
+### 5e. GKD rewrite — a regression
+
+The sampled loss above has a defect: its magnitude tracks the teacher's entropy,
+so α means something different per teacher (measured: ~1 nat shift at identical
+α, which made the v1/v2 teacher comparison uninterpretable).
+[GKD](https://arxiv.org/abs/2306.13649) generalizes the form, and our loss sat at
+exactly the corner that paper argues against — λ=0 (sample from the teacher) with
+forward KL. The generalized objective mixes on-policy data and interpolates the
+divergence:
+
+$$\mathcal{L}_{\mathrm{GKD}} = (1-\lambda)\,\mathbb{E}_{(x,y)\sim(X,Y)}\big[D(p_T\|p_S^\theta)\big]
++ \lambda\,\mathbb{E}_{x}\mathbb{E}_{y\sim p_S(\cdot|x)}\big[D(p_T\|p_S^\theta)\big]$$
+
+$$D_{\mathrm{JSD}(\beta)}(P\|Q) = \beta D_{\mathrm{KL}}\big(P\,\|\,\beta P + (1-\beta)Q\big)
++ (1-\beta) D_{\mathrm{KL}}\big(Q\,\|\,\beta P + (1-\beta)Q\big)$$
+
+with β→0 forward KL (mass-covering) and β→1 reverse KL (mode-seeking), and the
+divergence taken at each position over the **full** vocabulary:
+
+$$D(p_T\|p_S^\theta)(y|x) = \frac{1}{L_y}\sum_{n=1}^{L_y} D\big(p_T(\cdot|y_{<n},x)\,\|\,p_S^\theta(\cdot|y_{<n},x)\big)$$
+
+Our setting suits this unusually well: completions are 3 code tokens, so
+on-policy generation is nearly free, and the per-position vocabulary is 64 codes,
+so the full distribution is exactly computable — no truncation, no sampling.
+Implemented as `--loss exact --beta B --on-policy L`.
+
+**It did not work.** Both arms, 600 steps, λ=0.5, matched budget:
+
+| | HR@1 | HR@10 | NDCG@10 | ΔGAP | Gini | cov@10 |
+|---|---|---|---|---|---|---|
+| SFT baseline | 1.33% | 7.67% | 0.0390 | +0.188 | 0.972 | 7.4% |
+| **sampled loss (old)** | **2.33%** | **8.67%** | **0.0489** | +0.192 | 0.975 | 7.1% |
+| GKD β=1.0 (mode-seeking) | 0.67% | 6.33% | 0.0307 | +0.192 | 0.975 | 7.4% |
+| GKD β=0.0 (mass-covering) | 1.67% | 5.33% | 0.0316 | +0.197 | 0.976 | 6.5% |
+
+Both fall below the loss they replaced *and* below doing no stage 2 at all, and
+β moved nothing on the bias axis (+0.192 vs +0.197). The β ordering on HR@10 is
+at least directionally consistent with the sharpness story — mode-seeking beats
+mass-covering, 6.33% vs 5.33% — but the 1pp gap is inside this project's
+run-to-run spread, so it is not evidence for anything.
+
+Two candidate explanations, untested: the exact divergence scores **one path**
+per prompt where the sampled loss scored 5 sequences, so there is far less
+signal per step; and half the steps score a student-sampled path, which early in
+training is close to random and may contribute noise rather than correction.
+Nothing here says GKD is wrong — it says this implementation of it, at this
+budget, is worse than the simpler thing, and I would not have predicted that.
 
 Two caveats. The *popularity* metrics (pop_lift +0.477, ΔGAP +0.182) are better
 than SFT but still behind the one-line popularity tax (+0.458 / +0.163) — the

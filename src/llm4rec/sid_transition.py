@@ -64,23 +64,40 @@ class TransitionModel(nn.Module):
     """
 
     def __init__(self, levels: int = 3, K: int = 64, d: int = 128,
-                 hidden: int = 256, decay: float = 0.9, dropout: float = 0.3):
+                 hidden: int = 256, decay: float = 0.9, dropout: float = 0.3,
+                 n_items: int = 0, item_emb: bool = False, head: str = "code"):
         super().__init__()
         self.levels, self.K, self.decay = levels, K, decay
+        self.head, self.n_items = head, n_items
         self.code_emb = nn.ModuleList([nn.Embedding(K, d) for _ in range(levels)])
+        # Item-identity embeddings. Without these the model sees only SID codes,
+        # which are a coarse quantization of *text* (title + genres) embeddings —
+        # so it can represent semantic neighbourhoods but not collaborative
+        # co-occurrence, which is exactly what a last-item Markov baseline
+        # exploits to match it. Input-side only, so the output factorization the
+        # SDA KL relies on is untouched.
+        self.item_emb = nn.Embedding(n_items, d) if item_emb else None
         self.enc = nn.Sequential(
             nn.Linear(2 * d + levels * K, hidden), nn.GELU(), nn.Dropout(dropout),
             nn.Linear(hidden, hidden), nn.GELU(), nn.Dropout(dropout),
         )
-        # head l sees the encoder state plus the embeddings of codes 1..l-1
-        self.heads = nn.ModuleList(
-            [nn.Linear(hidden + l * d, K) for l in range(levels)])
+        if head == "item":
+            # Direct softmax over the catalog. Gives up the hierarchical chain
+            # rule (and its per-level telemetry) for the ability to separate two
+            # items that share all three codes.
+            self.item_head = nn.Linear(hidden, n_items)
+        else:
+            # head l sees the encoder state plus the embeddings of codes 1..l-1
+            self.heads = nn.ModuleList(
+                [nn.Linear(hidden + l * d, K) for l in range(levels)])
 
-    def encode(self, codes: torch.Tensor) -> torch.Tensor:
+    def encode(self, codes: torch.Tensor, items: torch.Tensor | None = None) -> torch.Tensor:
         """codes: (B, T, levels) long, PAD-filled -> (B, hidden)."""
         mask = (codes[:, :, 0] != PAD).float()                    # (B, T)
         safe = codes.clamp(min=0)
         item = sum(self.code_emb[l](safe[:, :, l]) for l in range(self.levels))
+        if self.item_emb is not None and items is not None:
+            item = item + self.item_emb(items.clamp(min=0))
         # recency weighting: the newest shown item counts most
         pos = mask.cumsum(1)                                      # 1..n over real items
         n = mask.sum(1, keepdim=True).clamp(min=1)
@@ -102,9 +119,13 @@ class TransitionModel(nn.Module):
         return self.heads[l](torch.cat(ctx, dim=-1))
 
     def forward(self, codes: torch.Tensor, target: torch.Tensor,
-                label_smoothing: float = 0.0) -> torch.Tensor:
-        """Joint NLL of the target SID: -log P*(c1) - log P*(c2|c1) - log P*(c3|c1,c2)."""
-        h = self.encode(codes)
+                label_smoothing: float = 0.0, items: torch.Tensor | None = None,
+                target_item: torch.Tensor | None = None) -> torch.Tensor:
+        """Joint NLL of the target: summed over SID levels, or over the catalog."""
+        h = self.encode(codes, items)
+        if self.head == "item":
+            return F.cross_entropy(self.item_head(h), target_item,
+                                   label_smoothing=label_smoothing)
         loss = 0.0
         for l in range(self.levels):
             logits = self.level_logits(h, [target[:, j] for j in range(l)])
@@ -130,15 +151,18 @@ def build_windows(seqs: dict, table: SidTable, history_len: int, holdout: int = 
 
 
 def encode_batch(histories: list, table: SidTable, levels: int, history_len: int,
-                 device) -> torch.Tensor:
-    """list of item-id lists -> (B, history_len, levels) code tensor, PAD-filled."""
+                 device, item_pos: dict | None = None):
+    """item-id lists -> (B, T, levels) codes, PAD-filled, and (B, T) item rows."""
     B = len(histories)
     out = np.full((B, history_len, levels), PAD, dtype=np.int64)
+    idx = np.full((B, history_len), PAD, dtype=np.int64)
     for b, h in enumerate(histories):
         h = [i for i in h if i in table.codes][-history_len:]
         for t, i in enumerate(h):
             out[b, t] = table.codes[i][:levels]
-    return torch.from_numpy(out).to(device)
+            if item_pos is not None:
+                idx[b, t] = item_pos[i]
+    return torch.from_numpy(out).to(device), torch.from_numpy(idx).to(device)
 
 
 # ---------------- inference wrapper ----------------
@@ -157,7 +181,8 @@ class Transition:
         cfg = blob["config"]
         self.model = TransitionModel(
             **{k: cfg[k] for k in ("levels", "K", "d", "hidden", "decay")},
-            dropout=cfg.get("dropout", 0.0))
+            dropout=cfg.get("dropout", 0.0), n_items=cfg.get("n_items", 0),
+            item_emb=cfg.get("item_emb", False), head=cfg.get("head", "code"))
         self.model.load_state_dict(blob["state_dict"])
         self.model.to(device).eval()
         self.device = device
@@ -237,9 +262,9 @@ class Transition:
 
     @torch.no_grad()
     def _encode(self, histories):
-        codes = encode_batch(histories, self.table, self.levels,
-                             self.history_len, self.device)
-        return self.model.encode(codes)
+        codes, idx = encode_batch(histories, self.table, self.levels,
+                                  self.history_len, self.device, self.item_pos)
+        return self.model.encode(codes, idx)
 
     @torch.no_grad()
     def log_p_items(self, histories: list, items: list, per_level: bool = False):
@@ -251,6 +276,14 @@ class Transition:
         telemetry (spec section 10). Note the breakdown is pre-smoothing, so its
         row sums differ slightly from the mixed total.
         """
+        if self.model.head == "item":
+            full = self.log_p_all(histories)
+            out = np.full(len(items), np.nan)
+            lv = np.full((len(items), self.levels + 1), np.nan)
+            for b, it in enumerate(items):
+                if it is not None:
+                    out[b] = full[b, self.item_pos[it]]
+            return (out, lv) if per_level else out
         h = self._encode(histories)
         valid = [b for b, it in enumerate(items) if it is not None]
         out = np.full(len(items), np.nan, dtype=np.float64)
@@ -280,7 +313,18 @@ class Transition:
 
     @torch.no_grad()
     def level1_probs(self, histories: list) -> torch.Tensor:
-        """P*(C1) per row — the coarse-grained target, for the D1 telemetry."""
+        """P*(C1) per row — the coarse-grained target, for the D1 telemetry.
+
+        With an item-level head there is no C1 factor to read off, so it is
+        recovered by summing item probabilities within each level-1 code group.
+        """
+        if self.model.head == "item":
+            p = torch.tensor(np.exp(self.log_p_all(histories)), device=self.device)
+            c1 = torch.tensor([self.table.codes[i][0] for i in self.items],
+                              device=self.device)
+            agg = torch.zeros(p.size(0), self.table.K, device=self.device)
+            agg.index_add_(1, c1, p)
+            return agg / agg.sum(-1, keepdim=True).clamp(min=1e-12)
         return F.softmax(self.model.level_logits(self._encode(histories), []), dim=-1)
 
     @torch.no_grad()
@@ -289,6 +333,10 @@ class Transition:
         out = []
         for s in range(0, len(histories), chunk):
             h = self._encode(histories[s:s + chunk])
+            if self.model.head == "item":
+                lp = F.log_softmax(self.model.item_head(h), dim=-1).cpu().numpy()
+                out.append(self._mix(lp))
+                continue
             B, n = h.size(0), len(self.items)
             hh = h.unsqueeze(1).expand(B, n, h.size(-1)).reshape(B * n, -1)
             codes = self.item_codes.unsqueeze(0).expand(B, n, self.levels).reshape(B * n, -1)
@@ -390,6 +438,14 @@ def main():
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--decay", type=float, default=0.9,
                     help="recency weight per step back in the history")
+    ap.add_argument("--item-emb", action="store_true",
+                    help="add per-item identity embeddings to the encoder input; "
+                         "without them the model sees only SID codes, a coarse "
+                         "quantization of item TEXT, so it cannot represent "
+                         "collaborative co-occurrence at all")
+    ap.add_argument("--head", choices=["code", "item"], default="code",
+                    help="code: hierarchical P(C1)P(C2|C1)P(C3|C1,C2), keeps the "
+                         "KL chain rule; item: direct softmax over the catalog")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -417,19 +473,30 @@ def main():
     print(f"{len(pairs)} next-step training windows from {len(seqs)} users "
           f"(last 2 interactions per user held out)")
 
-    hist = encode_batch([h for h, _ in pairs], table, levels, args.history, device)
+    item_pos = {i: k for k, i in enumerate(sorted(table.codes))}
+    hist, hist_idx = encode_batch([h for h, _ in pairs], table, levels,
+                                  args.history, device, item_pos)
     tgt = torch.tensor([table.codes[t][:levels] for _, t in pairs],
                        dtype=torch.long, device=device)
+    tgt_item = torch.tensor([item_pos[t] for _, t in pairs],
+                            dtype=torch.long, device=device)
 
     val_rows = [json.loads(l) for l in open(args.val)]
     val_hist = [r["history_items"] for r in val_rows]
     val_tgt = [r["target_item"] for r in val_rows]
-    val_codes_h = encode_batch(val_hist, table, levels, args.history, device)
+    val_codes_h, val_idx = encode_batch(val_hist, table, levels, args.history,
+                                        device, item_pos)
     val_codes_t = torch.tensor([table.codes[t][:levels] for t in val_tgt],
                                dtype=torch.long, device=device)
+    val_tgt_item = torch.tensor([item_pos[t] for t in val_tgt],
+                                dtype=torch.long, device=device)
 
     model = TransitionModel(levels=levels, K=table.K, d=args.d, hidden=args.hidden,
-                            decay=args.decay, dropout=args.dropout).to(device)
+                            decay=args.decay, dropout=args.dropout,
+                            n_items=len(item_pos), item_emb=args.item_emb,
+                            head=args.head).to(device)
+    print(f"T_phi: {sum(p.numel() for p in model.parameters()):,} params "
+          f"(item_emb={args.item_emb}, head={args.head})")
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
                             weight_decay=args.weight_decay)
     n = len(pairs)
@@ -442,14 +509,16 @@ def main():
         tot = 0.0
         for s in range(0, n, args.batch):
             idx = perm[s:s + args.batch]
-            loss = model(hist[idx], tgt[idx], label_smoothing=args.label_smoothing)
+            loss = model(hist[idx], tgt[idx], label_smoothing=args.label_smoothing,
+                         items=hist_idx[idx], target_item=tgt_item[idx])
             opt.zero_grad()
             loss.backward()
             opt.step()
             tot += loss.item() * len(idx)
         model.eval()
         with torch.no_grad():
-            vloss = float(model(val_codes_h, val_codes_t))
+            vloss = float(model(val_codes_h, val_codes_t, items=val_idx,
+                                target_item=val_tgt_item))
         flag = ""
         if vloss < best:
             best, best_state = vloss, {k: v.detach().clone()
@@ -465,7 +534,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     cfg = dict(levels=levels, K=table.K, d=args.d, hidden=args.hidden,
                decay=args.decay, dropout=args.dropout,
-               history_len=args.history, smooth=args.smooth)
+               history_len=args.history, smooth=args.smooth,
+               n_items=len(item_pos), item_emb=args.item_emb, head=args.head)
     torch.save({"config": cfg, "state_dict": model.state_dict()}, out / "transition.pt")
     print(f"saved {out}/transition.pt")
 

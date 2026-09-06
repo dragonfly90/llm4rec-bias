@@ -23,14 +23,32 @@ rather than hoping the policy stumbles onto them. A KL to a known distribution
 over an enumerable output space (1682 items) is a distillation problem; casting
 it as a reward buys nothing and costs the mechanism.
 
-Loss (hard-label + soft-target distillation + an ensemble term):
+Loss (default, --loss exact), following GKD (https://arxiv.org/abs/2306.13649):
 
-    L = alpha * CE(i*)  +  (1 - alpha) * mean_m CE(i_m)  +  lambda * KL(Q_bar || P_bar)
+    L = (1/L) sum_n JSD_beta( p_T(.|path_<n) || p_S(.|path_<n) )
+        + alpha * CE(i*)  +  lambda_exp * KL(Q_bar || P_bar)
 
-with i_m ~ P~*, the (optionally propensity-debiased) target — sampled, not
-top-M, see DistillRows. The label term defends HR, which pure distillation would
-drag down toward the teacher's own accuracy; the soft term supplies the spread a
-single label can never carry.
+Three deliberate choices, each from a measurement in this repo:
+
+  * **Exact, not sampled.** At each of the 3 SID positions the vocabulary is 64
+    code tokens, so the two distributions are compared in full. The older
+    --loss sampled draws M items and takes cross-entropy, which is noisy and
+    makes alpha depend on the teacher's entropy -- swapping teachers then
+    silently changes the effective hyperparameter (measured: ~1 nat shift at
+    identical alpha, which is what made the v1/v2 teacher comparison
+    uninterpretable).
+  * **beta interpolates forward KL (0) to reverse KL (1).** Final policy
+    entropy correlates +0.97 with HR@10 across every checkpoint here, so how
+    peaked the student ends up is the dominant factor in retrieval quality;
+    beta is the principled control over it. Mass-covering spreads the student
+    (better coverage, worse HR@10), mode-seeking keeps it sharp.
+  * **--on-policy scores a path sampled from the student.** GKD's central
+    claim: training only on teacher/ground-truth sequences leaves a
+    train-inference mismatch. Cheap here -- completions are 3 code tokens.
+
+alpha is ADDITIVE, not a convex mixture: the divergence is ~0.07 nats and the
+label cross-entropy ~5.6, so mixing them convexly at 0.5 would reduce the
+divergence to a rounding error.
 
 The third term is the one nothing in this repo has had. Every reward tried here
 is per-example, but exposure Gini and coverage@K are properties of the
@@ -47,6 +65,7 @@ CLI:
 
 import argparse
 import json
+import math
 
 import numpy as np
 import torch
@@ -99,10 +118,42 @@ class DistillRows(Dataset):
         return row, self.catalog[idx], np.full(self.top_m, 1.0 / self.top_m), marg
 
 
+def exact_divergence(model, transition, prompt_ids, attn, path_codes, lvl_ids,
+                     histories, beta: float):
+    """Per-position JSD between teacher and student over the full 64-code vocab.
+
+    The sampled-item loss it replaces is a Monte-Carlo estimate from M draws,
+    which is noisy and -- worse -- makes the alpha coefficient depend on the
+    teacher's entropy, so swapping teachers silently changes the effective
+    hyperparameter (measured: v1 vs v2 soft loss differed by ~1 nat at identical
+    alpha). Here nothing is sampled: at each of the 3 SID positions the
+    vocabulary is 64 code tokens, small enough to compare the two distributions
+    exactly. Requires a code-head teacher, which factors the way the student
+    generates.
+    """
+    L = lvl_ids.size(0)
+    ids = torch.cat([prompt_ids,
+                     torch.stack([lvl_ids[l][path_codes[:, l]] for l in range(L)], 1)], 1)
+    mask = torch.cat([attn, torch.ones_like(path_codes)], 1)
+    logits = model(input_ids=ids, attention_mask=mask, logits_to_keep=L + 1).logits
+    h = transition._encode(histories)                       # teacher state, no grad
+    pc = path_codes.to(h.device)                            # teacher runs on CPU
+    total = 0.0
+    for l in range(L):
+        # student: renormalize over this level's 64 code tokens
+        s = torch.log_softmax(logits[:, l, lvl_ids[l]].float(), dim=-1)
+        # teacher: same conditioning prefix, exact 64-way conditional
+        with torch.no_grad():
+            t = torch.log_softmax(
+                transition.model.level_logits(h, [pc[:, j] for j in range(l)]), dim=-1)
+        total = total + jsd(t.to(s.device), s, beta)
+    return (total / L).mean()
+
+
 def make_collate(tok, table):
     """One sequence per (prompt, candidate item); labels mask everything but the ID."""
     def collate(batch):
-        seqs, w, gold, margs = [], [], [], []
+        seqs, w, gold, margs, prompts, golds, hists = [], [], [], [], [], [], []
         for row, items, weights, marg in batch:
             prompt = tok.apply_chat_template(row["prompt"], add_generation_prompt=True,
                                              tokenize=True)
@@ -110,6 +161,8 @@ def make_collate(tok, table):
             if prompt and isinstance(prompt[0], (list, tuple)):
                 prompt = prompt[0]
             prompt = list(prompt)
+            prompts.append(prompt); golds.append(row["target_item"])
+            hists.append(row["history_items"])
             margs.append(marg)
             cand = list(items) + [row["target_item"]]      # M sampled + 1 hard
             for j, it in enumerate(cand):
@@ -122,9 +175,64 @@ def make_collate(tok, table):
         pad = tok.pad_token_id or 0
         input_ids = torch.tensor([[pad] * (width - len(s)) + s for s in seqs])
         attn = torch.tensor([[0] * (width - len(s)) + [1] * len(s) for s in seqs])
+        # prompt-only tensors + gold code path, for the exact-divergence loss
+        pw = max(len(p) for p in prompts)
+        p_ids = torch.tensor([[pad] * (pw - len(p)) + p for p in prompts])
+        p_attn = torch.tensor([[0] * (pw - len(p)) + [1] * len(p) for p in prompts])
+        gold_path = torch.tensor([list(table.codes[int(g)][:table.levels - 1]) for g in golds])
         return (input_ids, attn, len(table.codes[int(cand[0])]), torch.tensor(w),
-                torch.tensor(gold), torch.tensor(np.array(margs), dtype=torch.float32))
+                torch.tensor(gold), torch.tensor(np.array(margs), dtype=torch.float32),
+                p_ids, p_attn, gold_path, hists)
     return collate
+
+
+def jsd(logp_t: torch.Tensor, logp_s: torch.Tensor, beta: float) -> torch.Tensor:
+    """Generalized Jensen-Shannon between two log-distributions (GKD, eq. 2).
+
+    beta -> 0 recovers forward KL (mass-covering: the student must cover
+    everything the teacher considers plausible); beta -> 1 recovers reverse KL
+    (mode-seeking: the student may concentrate on one mode). That axis is
+    exactly the sharpness knob this repo measured the hard way -- final policy
+    entropy correlates +0.97 with HR@10, so how peaked the student ends up is
+    the single best predictor of retrieval quality here.
+    https://arxiv.org/abs/2306.13649
+    """
+    if beta <= 0:
+        return (logp_t.exp() * (logp_t - logp_s)).sum(-1)
+    if beta >= 1:
+        return (logp_s.exp() * (logp_s - logp_t)).sum(-1)
+    logm = torch.logaddexp(logp_t + math.log(beta), logp_s + math.log1p(-beta))
+    return (beta * (logp_t.exp() * (logp_t - logm)).sum(-1)
+            + (1 - beta) * (logp_s.exp() * (logp_s - logm)).sum(-1))
+
+
+def level_token_ids(tok, table, device):
+    """(levels, K) token ids: row l holds the ids of <sl_0> .. <sl_K-1>."""
+    return torch.tensor(
+        [[tok.convert_tokens_to_ids(f"<s{l}_{c}>") for c in range(table.K)]
+         for l in range(table.levels - 1)], device=device)
+
+
+@torch.no_grad()
+def sample_path(model, prompt_ids, attn, lvl_ids, temperature: float = 1.0):
+    """Autoregressively sample a SID prefix from the *student* (on-policy).
+
+    GKD's central claim is that training on the student's own generations, not
+    on teacher/dataset sequences, is what removes the train-inference
+    distribution mismatch. Completions here are 3 code tokens, so this costs 3
+    short forward passes -- the manoeuvre that is expensive for a 50K-vocab
+    summarizer is nearly free at 64 codes.
+    """
+    ids, mask = prompt_ids, attn
+    path = []
+    for l in range(lvl_ids.size(0)):
+        logits = model(input_ids=ids, attention_mask=mask, logits_to_keep=1).logits[:, -1]
+        p = torch.softmax(logits[:, lvl_ids[l]].float() / temperature, dim=-1)
+        code = torch.multinomial(p, 1)                       # (B, 1) index into K
+        path.append(code)
+        ids = torch.cat([ids, lvl_ids[l][code.squeeze(-1)].unsqueeze(-1)], dim=1)
+        mask = torch.cat([mask, torch.ones_like(code)], dim=1)
+    return torch.cat(path, dim=1), ids, mask
 
 
 def sequence_nll(model, input_ids, attn, n_label_tokens: int):
@@ -156,12 +264,29 @@ def main():
     ap.add_argument("--batch", type=int, default=2, help="prompts per step")
     ap.add_argument("--top-m", type=int, default=4,
                     help="how many items to SAMPLE from the target per prompt")
+    ap.add_argument("--loss", choices=["sampled", "exact"], default="exact",
+                    help="sampled: CE on M draws from the target (noisy, and "
+                         "makes alpha depend on teacher entropy); exact: "
+                         "per-position JSD over the full 64-code vocabulary")
+    ap.add_argument("--beta", type=float, default=0.5,
+                    help="[exact] generalized JSD: 0 = forward KL (mass-covering), "
+                         "1 = reverse KL (mode-seeking). Controls how peaked the "
+                         "student ends up, which predicts HR@10 here")
+    ap.add_argument("--on-policy", type=float, default=0.5,
+                    help="[exact] fraction of steps scored on a path sampled from "
+                         "the STUDENT rather than the ground-truth path (GKD lambda)")
+    ap.add_argument("--soft-weight", type=float, default=1.0,
+                    help="weight on the teacher term. 0 disables the teacher "
+                         "entirely, leaving plain continued SFT -- the control "
+                         "that decides whether the teacher contributes anything")
     ap.add_argument("--lambda-exp", type=float, default=1.0,
                     help="weight on the batch-level exposure term (0 = off); the "
                          "only term that sees the ensemble Gini/coverage measure")
-    ap.add_argument("--alpha", type=float, default=0.5,
-                    help="weight on the ground-truth label; 0 = pure distillation "
-                         "(accuracy converges toward the teacher's own)")
+    ap.add_argument("--alpha", type=float, default=0.02,
+                    help="ADDITIVE weight on the ground-truth label CE (not a "
+                         "convex mixture: the label term is ~80x the divergence "
+                         "in magnitude). 0 = pure distillation, which GKD does "
+                         "by construction since ground truth enters via the path")
     ap.add_argument("--pop-gamma", type=float, default=0.3,
                     help="propensity-debias the target: P~* ∝ P*/count^γ")
     ap.add_argument("--lr", type=float, default=2e-5)
@@ -200,20 +325,35 @@ def main():
 
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr)
     sched = torch.optim.lr_scheduler.LinearLR(opt, 1.0, 0.0, args.steps)
-    level1_ids = torch.tensor(
-        [tok.convert_tokens_to_ids(f"<s0_{c}>") for c in range(table.K)], device=device)
+    lvl_ids = level_token_ids(tok, table, device)
+    level1_ids = lvl_ids[0]
+    if args.loss == "exact" and transition.model.head != "code":
+        raise SystemExit("--loss exact needs a code-head teacher (train T_phi "
+                         "without --head item): the per-position divergence "
+                         "requires the teacher to factor as the student generates")
 
     step = 0
     while step < args.steps:
-        for input_ids, attn, nlab, w, gold, marg in dl:
+        for (input_ids, attn, nlab, w, gold, marg,
+             p_ids, p_attn, gold_path, hists) in dl:
             input_ids, attn = input_ids.to(device), attn.to(device)
             w, gold, marg = w.to(device), gold.to(device), marg.to(device)
+            p_ids, p_attn = p_ids.to(device), p_attn.to(device)
+            gold_path = gold_path.to(device)
             nll, first_logits = sequence_nll(model, input_ids, attn, nlab)
             # soft term: mean over sampled items; hard term: CE(i*). Both are
             # means over prompts, so the two coefficients stay comparable.
             n_prompts = gold.sum().clamp(min=1)
-            soft = (nll * w).sum() / n_prompts
             hard = (nll * gold.float()).sum() / n_prompts
+            if args.loss == "exact":
+                if np.random.rand() < args.on_policy:
+                    path, _, _ = sample_path(model, p_ids, p_attn, lvl_ids)
+                else:
+                    path = gold_path
+                soft = exact_divergence(model, transition, p_ids, p_attn, path,
+                                        lvl_ids, hists, args.beta)
+            else:
+                soft = (nll * w).sum() / n_prompts
 
             # Exposure term. Gini and coverage are properties of the *ensemble*
             # of recommendations across users, which no per-example loss can
@@ -232,7 +372,15 @@ def main():
                 p_bar = p_bar / p_bar.sum()
                 exp_loss = (q_bar * (q_bar.log() - p_bar.log())).sum()
 
-            loss = args.alpha * hard + (1 - args.alpha) * soft + args.lambda_exp * exp_loss
+            # NOT a convex combination: with --loss exact the two terms carry
+            # different units. The divergence is a JSD between 64-way code
+            # distributions (~0.07 nats); the label term is a cross-entropy over
+            # a 4-token sequence (~5.6 nats), ~80x larger. Convex mixing at
+            # alpha=0.5 would silently reduce the divergence to a rounding
+            # error, which is the same class of bug that made alpha
+            # teacher-dependent under --loss sampled.
+            loss = (args.soft_weight * soft + args.alpha * hard
+                    + args.lambda_exp * exp_loss)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 [p for p in model.parameters() if p.requires_grad], 1.0)
