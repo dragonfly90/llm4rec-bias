@@ -404,6 +404,7 @@ it.
 | **distill v2 2k** | item-head teacher, 1.07 ep | 0.7% | 7.3% | 0.036 | +0.472 | +0.178 | **0.961** | **10.6%** | 100% |
 | GKD β=1.0 | exact JSD, on-policy 0.5 | 0.7% | 6.3% | 0.031 | +0.487 | +0.192 | 0.975 | 7.4% | 96% |
 | GKD β=0.0 | exact JSD, on-policy 0.5 | 1.7% | 5.3% | 0.032 | +0.487 | +0.197 | 0.976 | 6.5% | 96% |
+| **control: no teacher** | plain continued SFT | 1.7% | 8.3% | 0.041 | +0.482 | **+0.187** | **0.971** | 8.2% | 98% |
 
 Reference levels: justified pop_lift **+0.270** (from held-out targets), so SFT
 carries **+0.213 excess**; `+pop w=1.0` removes ~12% of it (**+0.188 excess**),
@@ -1589,6 +1590,46 @@ So the two arms are two points on a frontier, not a better/worse pair: 600
 steps is the accuracy corner, 2000 the exposure corner. Budget was a real
 constraint — 3.3× the steps produced the first genuine exposure improvement
 here, where twelve RL runs at 0.32 epochs produced none.
+
+### 5d-bis. The control: the teacher contributes almost nothing
+
+`distill 600` was the project's best LLM checkpoint and the only stage-2 method
+to beat SFT, so the obvious control is: **run it with the teacher switched off**
+(`--soft-weight 0 --lambda-exp 0`), leaving plain continued supervised training
+at the same lr, batch and step count. If that alone beats SFT, "distillation
+beats RL" is really "more SFT beats RL".
+
+| metric | SFT (stage 1) | **control** (no teacher) | distill 600 (with teacher) |
+|---|---|---|---|
+| HR@1 ↑ | 1.33% | 1.67% | **2.33%** |
+| HR@10 ↑ | 7.67% | **8.33%** | **8.67%** |
+| NDCG@10 ↑ | 0.0390 | 0.0411 | **0.0489** |
+| **hr_ips@10** ↑ | 0.58% | **0.84%** | 0.64% |
+| ΔGAP ↓ | +0.188 | **+0.187** | +0.192 |
+| Gini ↓ | 0.972 | **0.971** | 0.975 |
+| coverage@10 ↑ | 7.4% | **8.2%** | 7.1% |
+
+**The control captures most of the gain.** Continued SFT with no teacher, no
+target distribution and no exposure term reaches HR@10 **8.33%**, against the
+full method's 8.67% and SFT's 7.67%. The teacher's entire marginal contribution
+is **+0.34pp HR@10** — far inside this project's run-to-run spread.
+
+**And on bias the control is *better*.** ΔGAP +0.187 vs +0.192, Gini 0.971 vs
+0.975, coverage 8.2% vs 7.1%, and `hr_ips@10` **0.84%** — the highest
+IPS-corrected accuracy anywhere in this repo, beating the previous best (0.67%,
+the popularity tax) and beating the teacher-trained student by 31%.
+
+So the honest reading of §5d changes. What beat SFT was **more supervised
+training**, not distribution alignment. The teacher buys a little top-1 accuracy
+(HR@1 2.33% vs 1.67%, NDCG 0.049 vs 0.041) and pays for it on every bias metric
+— which is the same trade every other intervention here makes, not a new
+capability. The SDA target, the debiasing, the exposure term and the whole
+reward-vs-loss argument are, on this evidence, worth ~0.3pp of HR@10 that a
+seed change could produce on its own.
+
+This control should have been run before the four distillation runs, not after
+them. It was named as the missing control when the trainer was written and then
+not executed for another dozen commits.
 
 ### 5e. GKD rewrite — a regression
 

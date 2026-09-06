@@ -275,6 +275,10 @@ def main():
     ap.add_argument("--on-policy", type=float, default=0.5,
                     help="[exact] fraction of steps scored on a path sampled from "
                          "the STUDENT rather than the ground-truth path (GKD lambda)")
+    ap.add_argument("--soft-weight", type=float, default=1.0,
+                    help="weight on the teacher term. 0 disables the teacher "
+                         "entirely, leaving plain continued SFT -- the control "
+                         "that decides whether the teacher contributes anything")
     ap.add_argument("--lambda-exp", type=float, default=1.0,
                     help="weight on the batch-level exposure term (0 = off); the "
                          "only term that sees the ensemble Gini/coverage measure")
@@ -375,7 +379,8 @@ def main():
             # alpha=0.5 would silently reduce the divergence to a rounding
             # error, which is the same class of bug that made alpha
             # teacher-dependent under --loss sampled.
-            loss = soft + args.alpha * hard + args.lambda_exp * exp_loss
+            loss = (args.soft_weight * soft + args.alpha * hard
+                    + args.lambda_exp * exp_loss)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 [p for p in model.parameters() if p.requires_grad], 1.0)
